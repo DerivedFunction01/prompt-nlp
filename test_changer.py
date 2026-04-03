@@ -33,10 +33,10 @@ def main():
         lang = __import__("random").choice(LANGUAGES)
         print(f"=== [{lang.upper()}] ===")
         print(f"Original : {sentence}")
+        rendered = changer.render_with_span(lang, sentence)
         print("Wrapped  :")
-        # Run the language wrapper directly by name
-        wrapper_fn = getattr(changer, f"_{lang}")
-        print(wrapper_fn(sentence))
+        print(rendered["text"])
+        print(f"Span     : {rendered['span']}")
         print()
 
 

@@ -731,6 +731,34 @@ class MutationOrchestrator:
         """
         self._restrictions[name] = permitted
 
+    @staticmethod
+    def count_ascii_alpha(text: str) -> int:
+        """Count ASCII alphabetic characters in a string."""
+        return sum(1 for c in text if c.isascii() and c.isalpha())
+
+    @classmethod
+    def compare_ascii_alpha(cls, before: str, after: str) -> dict[str, float | int]:
+        """
+        Compare ASCII alphabetic counts before and after mutation.
+
+        Returns a small summary that is handy for filtering or logging.
+        """
+        before_count = cls.count_ascii_alpha(before)
+        after_count = cls.count_ascii_alpha(after)
+        delta = after_count - before_count
+        ratio = (after_count / before_count) if before_count else 0.0
+        return {
+            "before": before_count,
+            "after": after_count,
+            "delta": delta,
+            "ratio": ratio,
+        }
+
+    @classmethod
+    def ascii_alpha_changed(cls, before: str, after: str) -> bool:
+        """Return True when the ASCII alpha count changed."""
+        return cls.count_ascii_alpha(before) != cls.count_ascii_alpha(after)
+
     def _random_profile(self) -> list[dict]:
         """
         Build a small random profile with 1-3 methods.
@@ -1288,6 +1316,10 @@ if __name__ == "__main__":
         "Please send the report by 5:30 PM on Tuesday.",
         "The quick brown fox jumps over the lazy dog.",
         "Accents and unicode variants should be easy to spot.",
+        "C'est déjà l'été, et le café est près de la gare.",
+        "¿Cómo estás? El niño comió piñata en la ciudad.",
+        "这是一个中文例子，用来观察 Unicode 变体。",
+        "これは日本語の例文です。Unicode の変化を見てみましょう。",
     ]
 
     orchestrator = MutationOrchestrator()
@@ -1526,4 +1558,9 @@ if __name__ == "__main__":
         print(f"\nINPUT: {text}")
         for name, profile in profiles:
             result = orchestrator.mutate(text, profile, seed=42)
+            summary = orchestrator.compare_ascii_alpha(text, result)
             print(f"  {name:<25}: {result}")
+            print(
+                f"    ascii alpha: {summary['before']} -> {summary['after']} "
+                f"(x{summary['ratio']:.2f}, delta {summary['delta']:+d})"
+            )

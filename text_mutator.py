@@ -320,7 +320,7 @@ def _apply_accent_mutation(
     token: str,
     char_prob: float,
     max_char_mutation_ratio: float = 0.33,
-    max_char_mutations_cap: int = 4,
+    max_char_mutations_cap: int = 2,
 ) -> str:
     chars = list(token)
     eligible = [
@@ -563,6 +563,7 @@ class RegisteredMutation:
         count    : number of injection points to generate for post-process ops
         position : "random" | "start" | "end" for post-process ops
         params   : arbitrary extra data forwarded to the callable
+        randomizable : whether blank-profile generation may pick this mutation
     """
 
     name: str
@@ -572,6 +573,7 @@ class RegisteredMutation:
     count: int = 1
     position: str = "random"
     params: dict = field(default_factory=dict)
+    randomizable: bool = True
 
     def _resolve_positions(self, n: int) -> list[int]:
         if self.position == "start":
@@ -630,6 +632,7 @@ class MutationOrchestrator:
         # to any user-registered post-process mutation at join time.
         self._registry: dict[str, RegisteredMutation] = {}
         self._restrictions: dict[str, set[str]] = dict(self._DEFAULT_RESTRICTIONS)
+        self._randomizable_overrides: dict[str, bool] = {}
         self.register(
             name="stop_word_injection",
             transform=_stop_word_caller,
@@ -649,6 +652,7 @@ class MutationOrchestrator:
         position: str = "random",
         params: dict | None = None,
         kind: str = "post_process",
+        randomizable: bool = True,
     ) -> None:
         """
         Register a mutation.
@@ -665,6 +669,7 @@ class MutationOrchestrator:
             position : "random" | "start" | "end"
             params   : forwarded verbatim to the callable on every invocation.
             kind     : "token", "post_process", or "text"
+            randomizable : if False, blank-profile generation will skip it.
 
         Raises:
             ValueError: if kind or position are not one of the accepted values.
@@ -688,7 +693,25 @@ class MutationOrchestrator:
             count=count,
             position=position,
             params=params or {},
+            randomizable=randomizable,
         )
+
+    def set_randomizable(self, name: str, enabled: bool) -> None:
+        """
+        Enable or disable whether a method may be chosen by blank-profile
+        generation.
+
+        This applies to both built-ins and registered mutations.
+        """
+        self._randomizable_overrides[name] = enabled
+
+    def _is_randomizable(self, name: str) -> bool:
+        if name in self._randomizable_overrides:
+            return self._randomizable_overrides[name]
+        reg = self._registry.get(name)
+        if reg is not None:
+            return reg.randomizable
+        return True
 
     def register_restriction(
         self,
@@ -732,13 +755,20 @@ class MutationOrchestrator:
             "unicode_variation",
         ]
         registry_names = list(self._registry)
+        randomizable_registry_names = [
+            name for name, reg in self._registry.items() if reg.randomizable
+        ]
         methods: list[str] = []
 
         if random.random() < 0.5:
             methods.append(random.choice(["word_chunk_swap", "reverse"]))
 
-        pool = [m for m in builtins if m not in methods]
-        pool.extend(name for name in registry_names if name not in methods)
+        pool = [m for m in builtins if m not in methods and self._is_randomizable(m)]
+        pool.extend(
+            name
+            for name in randomizable_registry_names
+            if name not in methods and self._is_randomizable(name)
+        )
 
         target_size = random.randint(1, min(3, len(pool) + len(methods)))
         while len(methods) < target_size and pool:

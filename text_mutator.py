@@ -597,6 +597,12 @@ class MutationOrchestrator:
             step["method"] == "reverse" and random.random() < step.get("chance", 1.0)
             for step in profile
         )
+        if do_swap and do_reverse:
+            log.warning(
+                "word_chunk_swap and reverse were both selected; skipping both to avoid equivalent reorderings."
+            )
+            do_swap = False
+            do_reverse = False
 
         # ------------------------------------------------------------------ #
         # Stage 4 — precompute index sets for in-pass mutators                #

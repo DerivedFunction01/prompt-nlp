@@ -209,10 +209,23 @@ def _apply_ocr(token: str, char_prob: float) -> str:
     return "".join(chars)
 
 
-def _apply_keyboard(token: str, char_prob: float) -> str:
+def _apply_keyboard(
+    token: str,
+    char_prob: float,
+    max_char_mutation_ratio: float = 0.33,
+) -> str:
     chars = list(token)
     eligible = [i for i, c in enumerate(chars) if c.lower() in KEYBOARD_MAP]
+    if not eligible:
+        return token
+
+    max_char_mutations = max(1, int(len(eligible) * max_char_mutation_ratio))
     indices = {i for i in eligible if random.random() < char_prob}
+
+    # Keep the token readable by avoiding excessive mutations in a single word.
+    if len(indices) > max_char_mutations:
+        indices = set(random.sample(sorted(indices), k=max_char_mutations))
+
     for i in indices:
         c = chars[i]
         neighbors = KEYBOARD_MAP[c.lower()]
@@ -439,7 +452,7 @@ class MutationOrchestrator:
         "reverse"             params: {}
         "stop_word_injection" params: {count: int, position: str}
         "ocr"                 params: {token_prob: float, char_prob: float}
-        "keyboard"            params: {token_prob: float, char_prob: float}
+        "keyboard"            params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "spelling"            params: {token_prob: float}
 
     Registered post-processors are referenced by their name as 'method' in a
@@ -661,6 +674,7 @@ class MutationOrchestrator:
         nth_char_interval: int | None = None
         interval_char_prob: float = 0.3
         keyboard_char_prob: float = 0.3
+        keyboard_max_char_mutation_ratio: float = 0.33
 
         # Wrap _select_token_indices to draw only from free_pool
         def _select_free(min_m: int, token_prob: float, predicate=None) -> set[int]:
@@ -700,6 +714,7 @@ class MutationOrchestrator:
 
             elif method == "keyboard":
                 keyboard_char_prob = p.get("char_prob", 0.3)
+                keyboard_max_char_mutation_ratio = p.get("max_char_mutation_ratio", 0.33)
                 keyboard_indices |= _select_free(min_m, p.get("token_prob", 0.3))
 
             elif method == "spelling":
@@ -748,7 +763,7 @@ class MutationOrchestrator:
 
             # 2. Keyboard
             if i in keyboard_indices:
-                tok = _apply_keyboard(tok, keyboard_char_prob)
+                tok = _apply_keyboard(tok, keyboard_char_prob, keyboard_max_char_mutation_ratio)
 
             # 3. Spelling
             if i in spelling_indices:
@@ -956,7 +971,7 @@ if __name__ == "__main__":
                 {
                     "method": "keyboard",
                     "chance": 1.0,
-                    "params": {"token_prob": 0.5, "char_prob": 0.4},
+                    "params": {"token_prob": 0.5, "char_prob": 0.4, "max_char_mutation_ratio": 0.33},
                 },
             ],
         ),

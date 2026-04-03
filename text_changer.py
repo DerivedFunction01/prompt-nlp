@@ -2,6 +2,7 @@ from __future__ import annotations
 import html
 import json
 import random
+import shlex
 from typing import Callable
 from text_encrypter import TextEncrypter
 from text_mutator import MutationOrchestrator
@@ -13,6 +14,7 @@ class TextChanger:
     def __init__(self) -> None:
         self.mutator = MutationOrchestrator()
         self.encrypter = TextEncrypter()
+        self._payload_token = "__PAYLOAD__"
         self._register_all_wrappers()
 
 
@@ -50,6 +52,19 @@ class TextChanger:
     @staticmethod
     def _quoted(text: str) -> str:
         return json.dumps(text, ensure_ascii=False)
+
+    def _materialize(self, template: str, text: str, mode: str = "raw") -> str:
+        if mode == "json":
+            value = json.dumps(text, ensure_ascii=False)
+        elif mode == "xml":
+            value = html.escape(text, quote=True)
+        elif mode == "shell":
+            value = shlex.quote(text)
+        elif mode == "sql":
+            value = text.replace("'", "''")
+        else:
+            value = text
+        return template.replace(self._payload_token, value)
 
     # ------------------------------------------------------------------ #
     #  PYTHON                                                              #
@@ -662,17 +677,16 @@ class TextChanger:
         root = self._get_name()
         child = self._get_name()
         attr = self._get_id()
-        safe = html.escape(text)
         rid = self._get_int()
 
         variants = [
-            f"<{root} id='{rid}'>\n  <{child}>{safe}</{child}>\n</{root}>",
-            f"<{root}><{child} {attr}='{rid}'>{safe}</{child}></{root}>",
+            f"<{root} id='{rid}'>\n  <{child}>{self._payload_token}</{child}>\n</{root}>",
+            f"<{root}><{child} {attr}='{rid}'>{self._payload_token}</{child}></{root}>",
             "\n".join(
                 [
                     '<?xml version="1.0" encoding="UTF-8"?>',
                     f"<{root}>",
-                    self._indent([f"<{child}>{safe}</{child}>"]),
+                    self._indent([f"<{child}>{self._payload_token}</{child}>"]),
                     f"</{root}>",
                 ]
             ),
@@ -681,15 +695,14 @@ class TextChanger:
                     f"<{root}>",
                     self._indent(
                         [
-                            f'<{child} {attr}="{rid}">{safe}</{child}>',
-                            f'<{child} {attr}="{self._get_int()}">{safe}</{child}>',
+                            f'<{child} {attr}="{rid}">{self._payload_token}</{child}>',
                         ]
                     ),
                     f"</{root}>",
                 ]
             ),
         ]
-        return random.choice(variants)
+        return self._materialize(random.choice(variants), text, mode="xml")
 
     # ------------------------------------------------------------------ #
     #  MARKDOWN                                                           #

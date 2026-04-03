@@ -3,19 +3,12 @@ import html
 import json
 import random
 import shlex
-from typing import Callable
-from text_encrypter import TextEncrypter
-from text_mutator import MutationOrchestrator
 import randomname
 
 
 
-class TextChanger:
-    def __init__(self) -> None:
-        self.mutator = MutationOrchestrator()
-        self.encrypter = TextEncrypter()
-        self._payload_token = "__PAYLOAD__"
-        self._register_all_wrappers()
+class TextFormatter:
+    _payload_token = "__PAYLOAD__"
 
 
     def _get_id(self) -> str:
@@ -875,44 +868,3 @@ class TextChanger:
             ),
         ]
         return random.choice(variants)
-
-    # ------------------------------------------------------------------ #
-    #  REGISTRATION                                                        #
-    # ------------------------------------------------------------------ #
-
-    def _register_wrapper(self, name: str, fn: Callable[[str], str]) -> None:
-        self.mutator.register(
-            name=name, kind="text", transform=fn, chance=1.0, randomizable=False
-        )
-
-    def _register_all_wrappers(self) -> None:
-        wrappers = {
-            "python": self._python,
-            "javascript": self._javascript,
-            "typescript": self._typescript,
-            "java": self._java,
-            "csharp": self._csharp,
-            "go": self._go,
-            "ruby": self._ruby,
-            "rust": self._rust,
-            "php": self._php,
-            "sql": self._sql,
-            "xml": self._xml,
-            "markdown": self._markdown,
-            "bash": self._bash,
-            "script": self._script,
-            "json": self._json,
-        }
-        for name, fn in wrappers.items():
-            self._register_wrapper(name, fn)
-
-    def change(
-        self,
-        text: str,
-        profile: list[dict] | None = None,
-        seed: int | None = None,
-    ) -> str:
-        return self.mutator.mutate(text, profile=profile, seed=seed)
-
-    def encrypt(self, text: str, method: str = "rot13", max_chars: int = 128) -> str:
-        return self.encrypter.encrypt_span(text, method=method, max_chars=max_chars)

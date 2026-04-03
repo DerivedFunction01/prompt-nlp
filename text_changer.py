@@ -5,46 +5,27 @@ import random
 from typing import Callable
 from text_encrypter import TextEncrypter
 from text_mutator import MutationOrchestrator
-from nltk.corpus import words as nltk_words
+import randomname
 
-
-_FALLBACK_VOCAB = [
-    "alpha",
-    "bravo",
-    "charlie",
-    "delta",
-    "echo",
-    "foxtrot",
-    "golf",
-    "hotel",
-    "input",
-    "output",
-    "print",
-    "system",
-    "value",
-    "vector",
-]
 
 
 class TextChanger:
     def __init__(self) -> None:
         self.mutator = MutationOrchestrator()
         self.encrypter = TextEncrypter()
-        if nltk_words is None:
-            self.vocab = list(_FALLBACK_VOCAB)
-        else:
-            try:
-                self.vocab = [w.lower() for w in nltk_words.words() if 4 <= len(w) <= 8]
-            except LookupError:
-                self.vocab = list(_FALLBACK_VOCAB)
         self._register_all_wrappers()
 
+
     def _get_id(self) -> str:
-        return random.choice(self.vocab)
+    # returns e.g. "sleek-voxel" — use just the noun half for single words
+        return randomname.get_name().split("-")[1]
+
 
     def _get_name(self, min_parts: int = 1, max_parts: int = 2) -> str:
-        parts = [self._get_id() for _ in range(random.randint(min_parts, max_parts))]
-        return "_".join(parts)
+        if random.randint(min_parts, max_parts) == 1:
+            return randomname.get_name().split("-")[1]
+        return randomname.get_name().replace("-", "_")
+
 
     def _get_class_name(self) -> str:
         """PascalCase class name from 1-2 vocab words."""

@@ -200,10 +200,23 @@ def _hamilton_allocate(
 # ---------------------------------------------------------------------------
 
 
-def _apply_ocr(token: str, char_prob: float) -> str:
+def _apply_ocr(
+    token: str,
+    char_prob: float,
+    max_char_mutation_ratio: float = 0.33,
+) -> str:
     chars = list(token)
     eligible = [i for i, c in enumerate(chars) if c in _OCR_CHAR_MAP]
+    if not eligible:
+        return token
+
+    max_char_mutations = max(1, int(len(eligible) * max_char_mutation_ratio))
     indices = {i for i in eligible if random.random() < char_prob}
+
+    # Keep OCR noise readable by limiting the number of substitutions per token.
+    if len(indices) > max_char_mutations:
+        indices = set(random.sample(sorted(indices), k=max_char_mutations))
+
     for i in indices:
         chars[i] = random.choice(_OCR_CHAR_MAP[chars[i]])
     return "".join(chars)
@@ -451,7 +464,7 @@ class MutationOrchestrator:
         "word_chunk_swap"     params: {}
         "reverse"             params: {}
         "stop_word_injection" params: {count: int, position: str}
-        "ocr"                 params: {token_prob: float, char_prob: float}
+        "ocr"                 params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "keyboard"            params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "spelling"            params: {token_prob: float}
 
@@ -626,6 +639,7 @@ class MutationOrchestrator:
         ocr_indices: set[int] = set()
         stuffing_indices: set[int] = set()
         ocr_char_prob: float = 0.3
+        ocr_max_char_mutation_ratio: float = 0.33
         stuffing_char_prob: float = 0.3
         stuffing_sep: str = "."
 
@@ -650,6 +664,7 @@ class MutationOrchestrator:
 
             elif method == "ocr":
                 ocr_char_prob = p.get("char_prob", 0.3)
+                ocr_max_char_mutation_ratio = p.get("max_char_mutation_ratio", 0.33)
                 ocr_indices |= _select_token_indices(
                     tokens,
                     p.get("token_prob", 0.3),
@@ -759,7 +774,7 @@ class MutationOrchestrator:
 
             # 1. OCR
             if i in ocr_indices:
-                tok = _apply_ocr(tok, ocr_char_prob)
+                tok = _apply_ocr(tok, ocr_char_prob, ocr_max_char_mutation_ratio)
 
             # 2. Keyboard
             if i in keyboard_indices:
@@ -961,7 +976,7 @@ if __name__ == "__main__":
                 {
                     "method": "ocr",
                     "chance": 1.0,
-                    "params": {"token_prob": 0.8, "char_prob": 0.6},
+                    "params": {"token_prob": 0.8, "char_prob": 0.6, "max_char_mutation_ratio": 0.33},
                 },
             ],
         ),
@@ -1028,7 +1043,7 @@ if __name__ == "__main__":
                 {
                     "method": "ocr",
                     "chance": 0.5,
-                    "params": {"token_prob": 0.4, "char_prob": 0.5},
+                    "params": {"token_prob": 0.4, "char_prob": 0.5, "max_char_mutation_ratio": 0.33},
                 },
                 {
                     "method": "interval_flip_token",

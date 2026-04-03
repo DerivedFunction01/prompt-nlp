@@ -478,6 +478,7 @@ class MutationOrchestrator:
     _DEFAULT_RESTRICTIONS: dict[str, set[str]] = {
         "sparse_stuffing": {"casing_swap", "casing_upper"},
         "ocr": {"casing_swap", "casing_upper"},
+        "pig_latin": {"casing_swap", "casing_upper"},
     }
 
     def __init__(self) -> None:
@@ -548,12 +549,139 @@ class MutationOrchestrator:
         """
         self._restrictions[name] = permitted
 
-    def mutate(self, text: str, profile: list[dict], seed: int | None = None) -> str:
+    def _random_profile(self) -> list[dict]:
+        """
+        Build a small random profile with 1-3 methods.
+
+        The reorder pair (word_chunk_swap / reverse) is treated as mutually
+        exclusive so the fallback does not create a no-op combination.
+        """
+        builtins = [
+            "invert_base",
+            "nth_strategy_word",
+            "nth_strategy_char",
+            "interval_flip_token",
+            "interval_flip_char",
+            "sparse_stuffing",
+            "pig_latin",
+            "word_chunk_swap",
+            "reverse",
+            "ocr",
+            "keyboard",
+            "spelling",
+        ]
+        registry_names = list(self._registry)
+        methods: list[str] = []
+
+        if random.random() < 0.5:
+            methods.append(random.choice(["word_chunk_swap", "reverse"]))
+
+        pool = [m for m in builtins if m not in methods]
+        pool.extend(name for name in registry_names if name not in methods)
+
+        target_size = random.randint(1, min(3, len(pool) + len(methods)))
+        while len(methods) < target_size and pool:
+            choice = random.choice(pool)
+            pool.remove(choice)
+            if choice in {"word_chunk_swap", "reverse"} and any(
+                m in {"word_chunk_swap", "reverse"} for m in methods
+            ):
+                continue
+            methods.append(choice)
+
+        def _profile_for(method: str) -> dict:
+            if method == "invert_base":
+                return {"method": method, "chance": 1.0}
+            if method == "nth_strategy_word":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {"interval": random.randint(2, 4)},
+                }
+            if method == "nth_strategy_char":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {"interval": random.randint(2, 4)},
+                }
+            if method == "interval_flip_token":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {"token_prob": round(random.uniform(0.3, 0.8), 2)},
+                }
+            if method == "interval_flip_char":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {
+                        "token_prob": round(random.uniform(0.3, 0.8), 2),
+                        "char_prob": round(random.uniform(0.2, 0.6), 2),
+                    },
+                }
+            if method == "sparse_stuffing":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {
+                        "word_prob": round(random.uniform(0.3, 0.8), 2),
+                        "char_prob": round(random.uniform(0.2, 0.5), 2),
+                    },
+                }
+            if method == "pig_latin":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {"token_prob": round(random.uniform(0.4, 0.9), 2)},
+                }
+            if method == "word_chunk_swap":
+                return {"method": method, "chance": 1.0}
+            if method == "reverse":
+                return {"method": method, "chance": 1.0}
+            if method == "ocr":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {
+                        "token_prob": round(random.uniform(0.4, 0.9), 2),
+                        "char_prob": round(random.uniform(0.2, 0.6), 2),
+                        "max_char_mutation_ratio": 0.33,
+                    },
+                }
+            if method == "keyboard":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {
+                        "token_prob": round(random.uniform(0.4, 0.9), 2),
+                        "char_prob": round(random.uniform(0.2, 0.6), 2),
+                        "max_char_mutation_ratio": 0.33,
+                    },
+                }
+            if method == "spelling":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {"token_prob": round(random.uniform(0.4, 0.9), 2)},
+                }
+            return {"method": method, "chance": 1.0}
+
+        return [_profile_for(method) for method in methods]
+
+    def mutate(
+        self,
+        text: str,
+        profile: list[dict] | None = None,
+        seed: int | None = None,
+    ) -> str:
         if seed is not None:
             random.seed(seed)
 
         if not text:
             return text
+
+        if not profile:
+            profile = self._random_profile()
 
         # ------------------------------------------------------------------ #
         # Stage 0 — invert_base: whole-string swapcase before split           #

@@ -66,6 +66,87 @@ for replacement, originals in OCR_MAP.items():
     for ch in originals:
         _OCR_CHAR_MAP.setdefault(ch, []).append(replacement)
 
+UNICODE_ACCENT_VARIANTS: dict[str, list[str]] = {
+    "a": ["á", "à", "â", "ä", "ã", "å", "ā", "ă", "ą"],
+    "b": ["ḃ", "ƀ", "ɓ"],
+    "c": ["ç", "ć", "č"],
+    "d": ["ď", "đ", "ḋ", "ḍ"],
+    "e": ["é", "è", "ê", "ë", "ē", "ė", "ę"],
+    "f": ["ƒ"],
+    "g": ["ğ", "ĝ", "ġ", "ģ"],
+    "h": ["ħ", "ḥ"],
+    "i": ["í", "ì", "î", "ï", "ī", "į"],
+    "j": ["ĵ"],
+    "k": ["ķ", "ḱ"],
+    "l": ["ĺ", "ļ", "ľ", "ł"],
+    "m": ["ṃ"],
+    "n": ["ñ", "ń", "ņ", "ň"],
+    "o": ["ó", "ò", "ô", "ö", "õ", "ō", "ő"],
+    "p": ["ṕ"],
+    "r": ["ŕ", "ř", "ṛ"],
+    "s": ["ś", "š", "ş", "ș"],
+    "t": ["ť", "ţ", "ṭ", "ŧ"],
+    "u": ["ú", "ù", "û", "ü", "ū", "ű", "ŭ", "ũ"],
+    "v": ["ṽ"],
+    "w": ["ŵ", "ẁ", "ẃ"],
+    "y": ["ý", "ÿ", "ŷ"],
+    "z": ["ź", "ž", "ż", "ẓ"],
+}
+
+UNICODE_SIMPLE_VARIANTS: dict[str, list[str]] = {
+    "a": ["а"],
+    "c": ["с"],
+    "e": ["е"],
+    "i": ["і"],
+    "j": ["ј"],
+    "o": ["о"],
+    "p": ["р"],
+    "s": ["ѕ"],
+    "x": ["х"],
+    "y": ["у"],
+}
+
+UNICODE_STYLIZED_VARIANTS: dict[str, list[str]] = {
+    "a": ["ɑ", "α"],
+    "b": ["Ь", "в"],
+    "c": ["ᴄ", "ϲ"],
+    "d": ["ԁ"],
+    "e": ["ε", "℮"],
+    "f": ["ғ"],
+    "g": ["ɡ", "г"],
+    "h": ["һ"],
+    "i": ["ı", "ι"],
+    "k": ["к", "κ"],
+    "l": ["ⅼ", "ӏ"],
+    "m": ["м"],
+    "n": ["п", "η"],
+    "o": ["օ", "ο"],
+    "q": ["զ"],
+    "r": ["г", "ɾ", "ʀ"],
+    "t": ["т", "τ"],
+    "u": ["ս", "υ"],
+    "v": ["ѵ", "ν"],
+    "w": ["ш", "ω"],
+    "z": ["զ"],
+}
+
+UNICODE_VARIANT_MAP: dict[str, dict[str, list[str]]] = {}
+for base in set(UNICODE_ACCENT_VARIANTS) | set(UNICODE_SIMPLE_VARIANTS) | set(UNICODE_STYLIZED_VARIANTS):
+    accent_variants = UNICODE_ACCENT_VARIANTS.get(base, [])
+    simple_variants = UNICODE_SIMPLE_VARIANTS.get(base, [])
+    stylized_variants = UNICODE_STYLIZED_VARIANTS.get(base, [])
+    broad_variants = list(
+        dict.fromkeys([*accent_variants, *simple_variants, *stylized_variants])
+    )
+    levels: dict[str, list[str]] = {}
+    if accent_variants:
+        levels["accent"] = accent_variants
+    if simple_variants:
+        levels["simple"] = simple_variants
+    if broad_variants:
+        levels["broad"] = broad_variants
+    UNICODE_VARIANT_MAP[base] = levels
+
 KEYBOARD_MAP: dict[str, list[str]] = {
     "q": ["w", "a"],
     "w": ["q", "e", "s"],
@@ -220,6 +301,65 @@ def _apply_ocr(
     for i in indices:
         chars[i] = random.choice(_OCR_CHAR_MAP[chars[i]])
     return "".join(chars)
+
+
+def _unicode_variants_for(
+    char: str, level: str, fallback_level: str | None = None
+) -> list[str]:
+    base = char.lower()
+    levels = UNICODE_VARIANT_MAP.get(base, {})
+    variants = levels.get(level, [])
+    if not variants and fallback_level is not None:
+        variants = levels.get(fallback_level, [])
+    if char.isupper():
+        return [v.upper() if len(v) == 1 else v for v in variants]
+    return variants
+
+
+def _apply_accent_mutation(
+    token: str,
+    char_prob: float,
+    max_char_mutation_ratio: float = 0.33,
+    max_char_mutations_cap: int = 4,
+) -> str:
+    chars = list(token)
+    eligible = [
+        i
+        for i, c in enumerate(chars)
+        if _unicode_variants_for(c, "accent")
+        or _unicode_variants_for(c, "simple")
+    ]
+    if not eligible:
+        return token
+
+    max_char_mutations = min(
+        max(1, int(len(eligible) * max_char_mutation_ratio)),
+        max_char_mutations_cap,
+    )
+    indices = {i for i in eligible if random.random() < char_prob}
+
+    # Keep accent mutation readable by limiting substitutions per token.
+    if len(indices) > max_char_mutations:
+        indices = set(random.sample(sorted(indices), k=max_char_mutations))
+
+    for i in indices:
+        variants = _unicode_variants_for(chars[i], "accent") or _unicode_variants_for(
+            chars[i], "simple"
+        )
+        chars[i] = random.choice(variants)
+    return "".join(chars)
+
+
+def _apply_unicode_variation(text: str, level: str = "simple") -> str:
+    chars = list(text)
+    changed = False
+    for i, c in enumerate(chars):
+        variants = _unicode_variants_for(c, level)
+        if not variants:
+            continue
+        chars[i] = random.choice(variants)
+        changed = True
+    return "".join(chars) if changed else text
 
 
 def _apply_keyboard(
@@ -461,6 +601,7 @@ class MutationOrchestrator:
         "interval_flip_token" params: {token_prob: float}
         "interval_flip_char"  params: {token_prob: float, char_prob: float}
         "sparse_stuffing"     params: {word_prob: float, char_prob: float, symbols: str}
+        "accent_mutation"     params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "pig_latin"           params: {token_prob: float}
         "word_chunk_swap"     params: {}
         "reverse"             params: {}
@@ -468,6 +609,7 @@ class MutationOrchestrator:
         "ocr"                 params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "keyboard"            params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "spelling"            params: {token_prob: float}
+        "unicode_variation"   params: {level: "accent" | "simple" | "broad"}
 
     Registered mutations are referenced by their name as 'method' in a
     profile step, identical to built-ins. Use register() to add them.
@@ -479,6 +621,7 @@ class MutationOrchestrator:
     _DEFAULT_RESTRICTIONS: dict[str, set[str]] = {
         "sparse_stuffing": {"casing_swap", "casing_upper"},
         "ocr": {"casing_swap", "casing_upper"},
+        "accent_mutation": {"casing_swap", "casing_upper"},
         "pig_latin": {"casing_swap", "casing_upper"},
     }
 
@@ -579,12 +722,14 @@ class MutationOrchestrator:
             "interval_flip_token",
             "interval_flip_char",
             "sparse_stuffing",
+            "accent_mutation",
             "pig_latin",
             "word_chunk_swap",
             "reverse",
             "ocr",
             "keyboard",
             "spelling",
+            "unicode_variation",
         ]
         registry_names = list(self._registry)
         methods: list[str] = []
@@ -644,6 +789,16 @@ class MutationOrchestrator:
                         "char_prob": round(random.uniform(0.2, 0.5), 2),
                     },
                 }
+            if method == "accent_mutation":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {
+                        "token_prob": round(random.uniform(0.4, 0.9), 2),
+                        "char_prob": round(random.uniform(0.2, 0.6), 2),
+                        "max_char_mutation_ratio": 0.33,
+                    },
+                }
             if method == "pig_latin":
                 return {
                     "method": method,
@@ -679,6 +834,12 @@ class MutationOrchestrator:
                     "method": method,
                     "chance": 1.0,
                     "params": {"token_prob": round(random.uniform(0.4, 0.9), 2)},
+                }
+            if method == "unicode_variation":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {"level": random.choice(["simple", "accent", "broad"])},
                 }
             return {"method": method, "chance": 1.0}
 
@@ -765,7 +926,7 @@ class MutationOrchestrator:
         _STRUCTURAL = {"invert_base", "word_chunk_swap", "reverse"} | set(
             name
             for name, reg in self._registry.items()
-            if reg.kind in {"post_process", "text"}
+            if reg.kind == "post_process"
         )
         _TOKEN_CUSTOM = {
             name for name, reg in self._registry.items() if reg.kind == "token"
@@ -773,12 +934,13 @@ class MutationOrchestrator:
         _TEXT_CUSTOM = {
             name for name, reg in self._registry.items() if reg.kind == "text"
         }
+        _TEXT_FINAL = {"unicode_variation"}
 
         # Per-mutator config harvested from active profile steps
         _cfg: dict[str, dict] = {}  # method -> {p, min_m, chance_passed}
         for step in profile:
             method = step["method"]
-            if method in _STRUCTURAL or method in _TEXT_CUSTOM:
+            if method in _STRUCTURAL or method in _TEXT_CUSTOM or method in _TEXT_FINAL:
                 continue
             if random.random() >= step.get("chance", 1.0):
                 continue
@@ -795,9 +957,12 @@ class MutationOrchestrator:
         _restrict_alloc = _hamilton_allocate(_restrict_requests, _all_eligible)
 
         ocr_indices: set[int] = set()
+        accent_indices: set[int] = set()
         stuffing_indices: set[int] = set()
         ocr_char_prob: float = 0.3
         ocr_max_char_mutation_ratio: float = 0.33
+        accent_char_prob: float = 0.3
+        accent_max_char_mutation_ratio: float = 0.33
         stuffing_char_prob: float = 0.3
         stuffing_sep: str = "."
 
@@ -829,6 +994,16 @@ class MutationOrchestrator:
                     min_m,
                 )
                 _restrictive_indices |= ocr_indices
+
+            elif method == "accent_mutation":
+                accent_char_prob = p.get("char_prob", 0.3)
+                accent_max_char_mutation_ratio = p.get("max_char_mutation_ratio", 0.33)
+                accent_indices |= _select_token_indices(
+                    tokens,
+                    p.get("token_prob", 0.3),
+                    min_m,
+                )
+                _restrictive_indices |= accent_indices
 
         # --- 4c: Free pool ---
         _free_pool = [i for i in _all_eligible if i not in _restrictive_indices]
@@ -922,6 +1097,7 @@ class MutationOrchestrator:
             "interval_char": interval_char_indices,
             "keyboard": keyboard_indices,
             "spelling": spelling_indices,
+            "accent_mutation": accent_indices,
             "pig_latin": pig_latin_indices,
         }
         _name_to_index_set.update(custom_token_indices)
@@ -944,27 +1120,35 @@ class MutationOrchestrator:
             if i in ocr_indices:
                 tok = _apply_ocr(tok, ocr_char_prob, ocr_max_char_mutation_ratio)
 
-            # 2. Keyboard
+            # 2. Accent mutation
+            if i in accent_indices:
+                tok = _apply_accent_mutation(
+                    tok,
+                    accent_char_prob,
+                    accent_max_char_mutation_ratio,
+                )
+
+            # 3. Keyboard
             if i in keyboard_indices:
                 tok = _apply_keyboard(tok, keyboard_char_prob, keyboard_max_char_mutation_ratio)
 
-            # 3. Spelling
+            # 4. Spelling
             if i in spelling_indices:
                 tok = _apply_spelling(tok)
 
-            # 4. Pig Latin
+            # 5. Pig Latin
             if i in pig_latin_indices:
                 tok = _apply_pig_latin(tok)
 
-            # 5. Casing: nth_strategy (word-level uppercase)
+            # 6. Casing: nth_strategy (word-level uppercase)
             if i in casing_upper_indices:
                 tok = _apply_casing_uppercase(tok)
 
-            # 6. Casing: interval_flip token-level swapcase
+            # 7. Casing: interval_flip token-level swapcase
             if i in casing_swap_indices:
                 tok = _apply_casing_swapcase(tok)
 
-            # 7. nth_strategy char-level
+            # 8. nth_strategy char-level
             if nth_char_interval is not None:
                 chars = list(tok)
                 for j in range(0, len(chars), nth_char_interval):
@@ -972,15 +1156,15 @@ class MutationOrchestrator:
                         chars[j] = chars[j].upper()
                 tok = "".join(chars)
 
-            # 8. interval_flip char-level
+            # 9. interval_flip char-level
             if i in interval_char_indices:
                 tok = _apply_interval_flip_char(tok, interval_char_prob)
 
-            # 9. sparse_stuffing
+            # 10. sparse_stuffing
             if i in stuffing_indices:
                 tok = _apply_sparse_stuffing(tok, stuffing_sep, stuffing_char_prob)
 
-            # 10. registered token-level custom mutations
+            # 11. registered token-level custom mutations
             for method in _custom_token_methods:
                 if i in custom_token_indices.get(method, set()):
                     reg = self._registry[method]
@@ -1053,6 +1237,14 @@ class MutationOrchestrator:
             )
             result = override.transform(result)
 
+        for step in profile:
+            if step["method"] != "unicode_variation":
+                continue
+            if random.random() >= step.get("chance", 1.0):
+                continue
+            level = step.get("params", {}).get("level", "simple")
+            result = _apply_unicode_variation(result, level=level)
+
         return result
 
 
@@ -1065,6 +1257,7 @@ if __name__ == "__main__":
         "The service was excellent.",
         "Please send the report by 5:30 PM on Tuesday.",
         "The quick brown fox jumps over the lazy dog.",
+        "Accents and unicode variants should be easy to spot.",
     ]
 
     orchestrator = MutationOrchestrator()
@@ -1119,42 +1312,56 @@ if __name__ == "__main__":
             ],
         ),
         (
-            "interval_flip_char",
+            "accent_mutation",
             [
                 {
-                    "method": "interval_flip_char",
+                    "method": "accent_mutation",
                     "chance": 1.0,
-                    "params": {"token_prob": 0.5, "char_prob": 0.4},
+                    "params": {
+                        "token_prob": 1.0,
+                        "char_prob": 0.6,
+                        "max_char_mutation_ratio": 0.33,
+                    },
                 },
             ],
         ),
         (
-            "sparse_stuffing",
+            "unicode_simple",
             [
                 {
-                    "method": "sparse_stuffing",
+                    "method": "unicode_variation",
                     "chance": 1.0,
-                    "params": {"word_prob": 0.6, "char_prob": 0.4},
+                    "params": {"level": "simple"},
                 },
             ],
         ),
         (
-            "word_chunk_swap",
+            "unicode_broad",
             [
-                {"method": "word_chunk_swap", "chance": 1.0},
+                {
+                    "method": "unicode_variation",
+                    "chance": 1.0,
+                    "params": {"level": "broad"},
+                },
             ],
         ),
         (
-            "reverse",
+            "accent + unicode",
             [
-                {"method": "reverse", "chance": 1.0},
-            ],
-        ),
-        (
-            "word_chunk_swap + reverse",
-            [
-                {"method": "word_chunk_swap", "chance": 1.0},
-                {"method": "reverse", "chance": 1.0},
+                {
+                    "method": "accent_mutation",
+                    "chance": 1.0,
+                    "params": {
+                        "token_prob": 1.0,
+                        "char_prob": 0.6,
+                        "max_char_mutation_ratio": 0.33,
+                    },
+                },
+                {
+                    "method": "unicode_variation",
+                    "chance": 1.0,
+                    "params": {"level": "broad"},
+                },
             ],
         ),
         (
@@ -1234,13 +1441,35 @@ if __name__ == "__main__":
             ],
         ),
         (
+            "text processor",
+            [
+                {
+                    "method": "suffix_note",
+                    "chance": 1.0,
+                }
+            ],
+        ),
+        (
             "orchestrated",
             [
                 {"method": "invert_base", "chance": 0.3},
                 {
                     "method": "ocr",
                     "chance": 0.5,
-                    "params": {"token_prob": 0.4, "char_prob": 0.5, "max_char_mutation_ratio": 0.33},
+                    "params": {
+                        "token_prob": 0.4,
+                        "char_prob": 0.5,
+                        "max_char_mutation_ratio": 0.33,
+                    },
+                },
+                {
+                    "method": "accent_mutation",
+                    "chance": 0.5,
+                    "params": {
+                        "token_prob": 0.4,
+                        "char_prob": 0.5,
+                        "max_char_mutation_ratio": 0.33,
+                    },
                 },
                 {
                     "method": "interval_flip_token",
@@ -1248,19 +1477,20 @@ if __name__ == "__main__":
                     "params": {"token_prob": 0.4},
                 },
                 {
-                    "method": "sparse_stuffing",
+                    "method": "unicode_variation",
                     "chance": 0.5,
-                    "params": {"word_prob": 0.35, "char_prob": 0.3},
-                },
-                {"method": "word_chunk_swap", "chance": 0.4},
-                {
-                    "method": "stop_word_injection",
-                    "chance": 0.6,
-                    "params": {"count": 1},
+                    "params": {"level": "simple"},
                 },
             ],
         ),
     ]
+
+    orchestrator.register(
+        name="suffix_note",
+        kind="text",
+        transform=lambda text: text + " [finalized]",
+        chance=1.0,
+    )
 
     for text in demo_texts:
         print(f"\nINPUT: {text}")

@@ -417,7 +417,7 @@ class RegisteredMutation:
 
     Fields:
         name     : registry key — must match the 'method' string in a profile step
-        kind     : "token" or "post_process"
+        kind     : "token", "post_process", or "text"
         transform : token-level or post-process callable
         chance   : probability the post-processor fires per mutate() call
         count    : number of injection points to generate for post-process ops
@@ -516,17 +516,20 @@ class MutationOrchestrator:
             transform : callable for the registered mutation.
                        - kind="token": callable(token: str, params: dict | None) -> str
                        - kind="post_process": callable(params: dict | None) -> str
+                       - kind="text": callable(text: str) -> str
             chance   : probability [0, 1] the mutation runs per mutate() call.
             count    : number of injection points to produce for post-process ops.
             position : "random" | "start" | "end"
             params   : forwarded verbatim to the callable on every invocation.
-            kind     : "token" or "post_process"
+            kind     : "token", "post_process", or "text"
 
         Raises:
             ValueError: if kind or position are not one of the accepted values.
         """
-        if kind not in ("token", "post_process"):
-            raise ValueError(f"kind must be 'token' or 'post_process'; got {kind!r}")
+        if kind not in ("token", "post_process", "text"):
+            raise ValueError(
+                f"kind must be 'token', 'post_process', or 'text'; got {kind!r}"
+            )
         if position not in ("random", "start", "end"):
             raise ValueError(
                 f"position must be 'random', 'start', or 'end'; got {position!r}"
@@ -760,17 +763,22 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------ #
 
         _STRUCTURAL = {"invert_base", "word_chunk_swap", "reverse"} | set(
-            name for name, reg in self._registry.items() if reg.kind == "post_process"
+            name
+            for name, reg in self._registry.items()
+            if reg.kind in {"post_process", "text"}
         )
         _TOKEN_CUSTOM = {
             name for name, reg in self._registry.items() if reg.kind == "token"
+        }
+        _TEXT_CUSTOM = {
+            name for name, reg in self._registry.items() if reg.kind == "text"
         }
 
         # Per-mutator config harvested from active profile steps
         _cfg: dict[str, dict] = {}  # method -> {p, min_m, chance_passed}
         for step in profile:
             method = step["method"]
-            if method in _STRUCTURAL:
+            if method in _STRUCTURAL or method in _TEXT_CUSTOM:
                 continue
             if random.random() >= step.get("chance", 1.0):
                 continue
@@ -1024,7 +1032,28 @@ class MutationOrchestrator:
             for w in injection_map.get(n, []):
                 parts.append(w)
 
-        return " ".join(parts)
+        result = " ".join(parts)
+
+        # Final text-level processors run after the full output has been built.
+        for step in profile:
+            pp = self._registry.get(step["method"])
+            if pp is None or pp.kind != "text":
+                continue
+            if random.random() >= step.get("chance", pp.chance):
+                continue
+            p = step.get("params", {})
+            override = RegisteredMutation(
+                name=pp.name,
+                kind=pp.kind,
+                transform=pp.transform,
+                chance=step.get("chance", pp.chance),
+                count=pp.count,
+                position=pp.position,
+                params={**pp.params, **p},
+            )
+            result = override.transform(result)
+
+        return result
 
 
 # ---------------------------------------------------------------------------

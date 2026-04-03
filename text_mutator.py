@@ -322,6 +322,49 @@ def _apply_sparse_stuffing(token: str, sep: str, char_prob: float) -> str:
     return "".join(out)
 
 
+def _apply_pig_latin(token: str) -> str:
+    """
+    Convert a token to a simple Pig Latin variant.
+
+    Rules:
+      - vowel-starting words: append "yay"
+      - consonant-starting words: move the leading consonant cluster to the end
+        and append "ay"
+
+    Leading/trailing punctuation is preserved.
+    """
+    prefix = token[: len(token) - len(token.lstrip(_STRIP_CHARS))]
+    suffix = token[len(token.rstrip(_STRIP_CHARS)) :]
+    stem = token[len(prefix) : len(token) - len(suffix)] if suffix else token[len(prefix) :]
+
+    if not stem or not stem.isalpha():
+        return token
+
+    lower = stem.lower()
+    vowels = "aeiou"
+
+    if lower[0] in vowels:
+        result = lower + "yay"
+    else:
+        cluster_end = 0
+        for i, ch in enumerate(lower):
+            if ch in vowels:
+                cluster_end = i
+                break
+        else:
+            cluster_end = len(lower)
+
+        if cluster_end == 0:
+            cluster_end = 1
+
+        result = lower[cluster_end:] + lower[:cluster_end] + "ay"
+
+    if stem[0].isupper():
+        result = result.capitalize()
+
+    return prefix + result + suffix
+
+
 # ---------------------------------------------------------------------------
 # MutationOrchestrator
 # ---------------------------------------------------------------------------
@@ -391,6 +434,7 @@ class MutationOrchestrator:
         "interval_flip_token" params: {token_prob: float}
         "interval_flip_char"  params: {token_prob: float, char_prob: float}
         "sparse_stuffing"     params: {word_prob: float, char_prob: float, symbols: str}
+        "pig_latin"           params: {token_prob: float}
         "word_chunk_swap"     params: {}
         "reverse"             params: {}
         "stop_word_injection" params: {count: int, position: str}
@@ -613,6 +657,7 @@ class MutationOrchestrator:
         interval_char_indices: set[int] = set()
         keyboard_indices: set[int] = set()
         spelling_indices: set[int] = set()
+        pig_latin_indices: set[int] = set()
         nth_char_interval: int | None = None
         interval_char_prob: float = 0.3
         keyboard_char_prob: float = 0.3
@@ -664,6 +709,13 @@ class MutationOrchestrator:
                     predicate=_spelling_eligible,
                 )
 
+            elif method == "pig_latin":
+                pig_latin_indices |= _select_free(
+                    min_m,
+                    p.get("token_prob", 0.3),
+                    predicate=lambda t: t.strip(_STRIP_CHARS).isalpha(),
+                )
+
         # --- 4e: Strip unrestricted indices that co-land on restricted tokens ---
         # For each restrictive mutator, remove co-landing unrestricted indices
         # that are not in its permitted co-mutator set.
@@ -673,6 +725,7 @@ class MutationOrchestrator:
             "interval_char": interval_char_indices,
             "keyboard": keyboard_indices,
             "spelling": spelling_indices,
+            "pig_latin": pig_latin_indices,
         }
         for restrictor, permitted in self._restrictions.items():
             restrictor_indices = (
@@ -701,15 +754,19 @@ class MutationOrchestrator:
             if i in spelling_indices:
                 tok = _apply_spelling(tok)
 
-            # 4. Casing: nth_strategy (word-level uppercase)
+            # 4. Pig Latin
+            if i in pig_latin_indices:
+                tok = _apply_pig_latin(tok)
+
+            # 5. Casing: nth_strategy (word-level uppercase)
             if i in casing_upper_indices:
                 tok = _apply_casing_uppercase(tok)
 
-            # 5. Casing: interval_flip token-level swapcase
+            # 6. Casing: interval_flip token-level swapcase
             if i in casing_swap_indices:
                 tok = _apply_casing_swapcase(tok)
 
-            # 6. nth_strategy char-level
+            # 7. nth_strategy char-level
             if nth_char_interval is not None:
                 chars = list(tok)
                 for j in range(0, len(chars), nth_char_interval):
@@ -717,11 +774,11 @@ class MutationOrchestrator:
                         chars[j] = chars[j].upper()
                 tok = "".join(chars)
 
-            # 7. interval_flip char-level
+            # 8. interval_flip char-level
             if i in interval_char_indices:
                 tok = _apply_interval_flip_char(tok, interval_char_prob)
 
-            # 8. sparse_stuffing
+            # 9. sparse_stuffing
             if i in stuffing_indices:
                 tok = _apply_sparse_stuffing(tok, stuffing_sep, stuffing_char_prob)
 
@@ -907,6 +964,16 @@ if __name__ == "__main__":
             "spelling",
             [
                 {"method": "spelling", "chance": 1.0, "params": {"token_prob": 0.8}},
+            ],
+        ),
+        (
+            "pig_latin",
+            [
+                {
+                    "method": "pig_latin",
+                    "chance": 1.0,
+                    "params": {"token_prob": 0.8},
+                },
             ],
         ),
         (

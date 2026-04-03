@@ -1,0 +1,972 @@
+import logging
+import random
+import string
+from functools import lru_cache
+
+log = logging.getLogger(__name__)
+
+import nltk
+from nltk.corpus import words as nltk_words
+
+# ---------------------------------------------------------------------------
+# Dictionary word set — short words only (len <= 6) to catch collision risk.
+# Long words are unlikely to accidentally swap/dup/delete into another word.
+# ---------------------------------------------------------------------------
+
+
+def _build_dict() -> frozenset[str]:
+    try:
+        word_list = nltk_words.words()
+    except LookupError:
+        nltk.download("words", quiet=True)
+        word_list = nltk_words.words()
+    return frozenset(w.lower() for w in word_list if len(w) <= 6)
+
+
+_DICT: frozenset[str] = _build_dict()
+
+_STRIP_CHARS = string.punctuation + string.whitespace
+
+
+@lru_cache(maxsize=8192)
+def _is_dict_word(token: str) -> bool:
+    return token.strip(_STRIP_CHARS).lower() in _DICT
+
+
+@lru_cache(maxsize=8192)
+def _spelling_eligible(token: str) -> bool:
+    """Token must be purely alphabetic (after stripping punctuation) and meet
+    the minimum length for at least one strategy."""
+    stem = token.strip(_STRIP_CHARS)
+    return stem.isalpha() and len(stem) >= 3  # 3 is the lowest gate (duplicate)
+
+
+# ---------------------------------------------------------------------------
+# Lookup tables (replaces NLPAug OCR augmenter)
+# ---------------------------------------------------------------------------
+
+OCR_MAP: dict[str, set[str]] = {
+    "0": {"o", "O"},
+    "1": {"l", "I", "i"},
+    "3": {"e", "E"},
+    "4": {"a", "A"},
+    "5": {"s", "S"},
+    "6": {"b", "G"},
+    "7": {"t", "T"},
+    "8": {"B"},
+    "@": {"a", "A"},
+    "$": {"s", "S"},
+}
+# Inverted: char -> replacement digit/symbol choices
+_OCR_CHAR_MAP: dict[str, list[str]] = {}
+for replacement, originals in OCR_MAP.items():
+    for ch in originals:
+        _OCR_CHAR_MAP.setdefault(ch, []).append(replacement)
+
+KEYBOARD_MAP: dict[str, list[str]] = {
+    "q": ["w", "a"],
+    "w": ["q", "e", "s"],
+    "e": ["w", "r", "d"],
+    "r": ["e", "t", "f"],
+    "t": ["r", "y", "g"],
+    "y": ["t", "u", "h"],
+    "u": ["y", "i", "j"],
+    "i": ["u", "o", "k"],
+    "o": ["i", "p", "l"],
+    "p": ["o", "l"],
+    "a": ["q", "s", "z"],
+    "s": ["a", "d", "w", "x"],
+    "d": ["s", "f", "e", "c"],
+    "f": ["d", "g", "r", "v"],
+    "g": ["f", "h", "t", "b"],
+    "h": ["g", "j", "y", "n"],
+    "j": ["h", "k", "u", "m"],
+    "k": ["j", "l", "i"],
+    "l": ["k", "o", "p"],
+    "z": ["a", "x"],
+    "x": ["z", "c", "s"],
+    "c": ["x", "v", "d"],
+    "v": ["c", "b", "f"],
+    "b": ["v", "n", "g"],
+    "n": ["b", "m", "h"],
+    "m": ["n", "j"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Index selectors (pure functions, no class state needed)
+# ---------------------------------------------------------------------------
+
+
+def _select_token_indices(
+    tokens: list[str],
+    token_prob: float,
+    min_mutations: int = 0,
+    predicate=None,
+) -> set[int]:
+    predicate = predicate or (lambda t: any(c.isalpha() for c in t))
+    eligible = [i for i, t in enumerate(tokens) if predicate(t)]
+    if not eligible:
+        return set()
+    forced_count = min(min_mutations, len(eligible))
+    forced = set(random.sample(eligible, k=forced_count)) if forced_count else set()
+    stochastic = {
+        i for i in eligible if i not in forced and random.random() < token_prob
+    }
+    return forced | stochastic
+
+
+def _select_char_indices(
+    token: str,
+    char_prob: float,
+    min_mutations: int = 0,
+    predicate=None,
+) -> set[int]:
+    predicate = predicate or (lambda c: c.isalpha())
+    eligible = [i for i, c in enumerate(token) if predicate(c)]
+    if not eligible:
+        return set()
+    forced_count = min(min_mutations, len(eligible))
+    forced = set(random.sample(eligible, k=forced_count)) if forced_count else set()
+    stochastic = {
+        i for i in eligible if i not in forced and random.random() < char_prob
+    }
+    return forced | stochastic
+
+
+# ---------------------------------------------------------------------------
+# Pool allocation — Hamilton's method
+# ---------------------------------------------------------------------------
+
+
+def _hamilton_allocate(
+    requests: list[tuple[str, int]],  # [(mutator_name, min_mutations), ...]
+    pool: list[int],  # available token indices
+) -> dict[str, int]:
+    """
+    Fairly allocates guaranteed slots from a finite pool using Hamilton's method
+    (largest-remainder apportionment). Emits logging.warning for any mutator
+    that receives fewer slots than requested.
+
+    Returns {mutator_name: allocated_count}.
+    """
+    total_requested = sum(m for _, m in requests)
+    available = len(pool)
+
+    if total_requested == 0:
+        return {name: 0 for name, _ in requests}
+
+    allocated: dict[str, int] = {}
+
+    if total_requested <= available:
+        # No conflict — everyone gets exactly what they asked for
+        for name, min_m in requests:
+            allocated[name] = min_m
+        return allocated
+
+    # Proportional quotas
+    quotas = {name: (min_m / total_requested) * available for name, min_m in requests}
+    floors = {name: int(q) for name, q in quotas.items()}
+    remainders = sorted(quotas.keys(), key=lambda name: -(quotas[name] - floors[name]))
+
+    # Distribute leftover seats by largest remainder
+    leftover = available - sum(floors.values())
+    result = dict(floors)
+    for name in remainders[:leftover]:
+        result[name] += 1
+
+    # Warn any mutator that was shorted
+    for name, min_m in requests:
+        got = result[name]
+        if got < min_m:
+            log.warning(
+                "Mutator %r requested min_mutations=%d but was allocated %d "
+                "(pool of %d exhausted by %d total requests).",
+                name,
+                min_m,
+                got,
+                available,
+                total_requested,
+            )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Per-token transform functions (str -> str, stateless)
+# ---------------------------------------------------------------------------
+
+
+def _apply_ocr(token: str, char_prob: float) -> str:
+    chars = list(token)
+    eligible = [i for i, c in enumerate(chars) if c in _OCR_CHAR_MAP]
+    indices = {i for i in eligible if random.random() < char_prob}
+    for i in indices:
+        chars[i] = random.choice(_OCR_CHAR_MAP[chars[i]])
+    return "".join(chars)
+
+
+def _apply_keyboard(token: str, char_prob: float) -> str:
+    chars = list(token)
+    eligible = [i for i, c in enumerate(chars) if c.lower() in KEYBOARD_MAP]
+    indices = {i for i in eligible if random.random() < char_prob}
+    for i in indices:
+        c = chars[i]
+        neighbors = KEYBOARD_MAP[c.lower()]
+        sub = random.choice(neighbors)
+        chars[i] = sub.upper() if c.isupper() else sub
+    return "".join(chars)
+
+
+def _apply_spelling(token: str) -> str:
+    """
+    Mutates a token using one of three primitive char operations:
+      - swap:      swap two adjacent characters         (len >= 4)
+      - duplicate: insert a copy of a char after itself (len >= 3)
+      - delete:    remove an interior character         (len >= 6)
+
+    Strips leading/trailing punctuation before operating, reattaches after.
+    Picks one strategy at random, generates up to 3 candidate positions,
+    returns the first result that is not a dictionary word.
+    If all candidates collide or the token is too short, returns unchanged.
+    """
+    prefix = token[: len(token) - len(token.lstrip(_STRIP_CHARS))]
+    suffix = token[len(token.rstrip(_STRIP_CHARS)) :]
+    stem = (
+        token[len(prefix) : len(token) - len(suffix)]
+        if suffix
+        else token[len(prefix) :]
+    )
+
+    if not stem.isalpha():
+        return token
+
+    slen = len(stem)
+
+    available = []
+    if slen >= 4:
+        available.append("swap")
+    if slen >= 3:
+        available.append("duplicate")
+    if slen >= 6:
+        available.append("delete")
+
+    if not available:
+        return token
+
+    strategy = random.choice(available)
+    chars = list(stem)
+
+    if strategy == "swap":
+        positions = random.sample(range(slen - 1), k=min(3, slen - 1))
+        for pos in positions:
+            candidate = chars[:]
+            candidate[pos], candidate[pos + 1] = candidate[pos + 1], candidate[pos]
+            result = "".join(candidate)
+            if not _is_dict_word(result):
+                return prefix + result + suffix
+        return token
+
+    elif strategy == "duplicate":
+        positions = random.sample(range(slen), k=min(3, slen))
+        for pos in positions:
+            candidate = chars[: pos + 1] + [chars[pos]] + chars[pos + 1 :]
+            result = "".join(candidate)
+            if not _is_dict_word(result):
+                return prefix + result + suffix
+        return token
+
+    else:  # delete — interior chars only
+        interior = list(range(1, slen - 1))
+        if not interior:
+            return token
+        positions = random.sample(interior, k=min(3, len(interior)))
+        for pos in positions:
+            candidate = chars[:pos] + chars[pos + 1 :]
+            result = "".join(candidate)
+            if not _is_dict_word(result):
+                return prefix + result + suffix
+        return token
+
+
+def _apply_casing_swapcase(token: str) -> str:
+    return token.swapcase()
+
+
+def _apply_casing_uppercase(token: str) -> str:
+    return token.upper()
+
+
+def _apply_interval_flip_char(token: str, char_prob: float) -> str:
+    indices = _select_char_indices(token, char_prob=char_prob)
+    if not indices:
+        return token
+    chars = list(token)
+    for i in indices:
+        chars[i] = chars[i].swapcase()
+    return "".join(chars)
+
+
+def _apply_sparse_stuffing(token: str, sep: str, char_prob: float) -> str:
+    if len(token) <= 1:
+        return token
+    out = []
+    last = len(token) - 1
+    for j, c in enumerate(token):
+        out.append(c)
+        if j < last and random.random() < char_prob:
+            out.append(sep)
+    return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# MutationOrchestrator
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = ["the", "and", "is", "of", "at", "with", "it", "or", "to", "a", "an"]
+
+
+def _stop_word_caller(params: dict | None) -> str:
+    return random.choice(_STOP_WORDS)
+
+
+# ---------------------------------------------------------------------------
+# PostProcessor — registered post-processor contract
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass, field
+from typing import Callable, Optional
+
+
+@dataclass
+class PostProcessor:
+    """
+    A named post-processor that splices caller-produced tokens into the output
+    during the join phase.
+
+    Fields:
+        name     : registry key — must match the 'method' string in a profile step
+        caller   : fn(params: dict | None) -> str, called once per injection point
+        chance   : probability the post-processor fires per mutate() call
+        count    : number of injection points to generate
+        position : "random" | "start" | "end"
+        params   : arbitrary extra data forwarded to caller on each invocation
+    """
+
+    name: str
+    caller: Callable[[Optional[dict]], str]
+    chance: float = 1.0
+    count: int = 1
+    position: str = "random"
+    params: dict = field(default_factory=dict)
+
+    def _resolve_positions(self, n: int) -> list[int]:
+        if self.position == "start":
+            return [0] * self.count
+        if self.position == "end":
+            return [n] * self.count
+        return [random.randint(0, n) for _ in range(self.count)]
+
+    def build_injection_map(self, n: int) -> dict[int, list[str]]:
+        """Returns {token_index: [injected_strings]} for splicing at join time."""
+        if random.random() >= self.chance:
+            return {}
+        injection: dict[int, list[str]] = {}
+        for pos in self._resolve_positions(n):
+            injection.setdefault(pos, []).append(self.caller(self.params or None))
+        return injection
+
+
+class MutationOrchestrator:
+    """
+    Single split → single pass → single join pipeline.
+
+    Built-in profile methods:
+        "invert_base"         params: {}
+        "nth_strategy_word"   params: {interval: int}
+        "nth_strategy_char"   params: {interval: int}
+        "interval_flip_token" params: {token_prob: float}
+        "interval_flip_char"  params: {token_prob: float, char_prob: float}
+        "sparse_stuffing"     params: {word_prob: float, char_prob: float, symbols: str}
+        "word_chunk_swap"     params: {}
+        "reverse"             params: {}
+        "stop_word_injection" params: {count: int, position: str}
+        "ocr"                 params: {token_prob: float, char_prob: float}
+        "keyboard"            params: {token_prob: float, char_prob: float}
+        "spelling"            params: {token_prob: float}
+
+    Registered post-processors are referenced by their name as 'method' in a
+    profile step, identical to built-ins. Use register() to add them.
+    """
+
+    # Default restriction map: restrictive mutator -> set of permitted co-mutators.
+    # Any mutator not in the permitted set is blocked from sharing a token index
+    # with the restrictor. Extend via register_restriction().
+    _DEFAULT_RESTRICTIONS: dict[str, set[str]] = {
+        "sparse_stuffing": {"casing_swap", "casing_upper"},
+        "ocr": {"casing_swap", "casing_upper"},
+    }
+
+    def __init__(self) -> None:
+        # stop_word_injection is pre-registered so it is dispatched identically
+        # to any user-registered post-processor at join time.
+        self._registry: dict[str, PostProcessor] = {}
+        self._restrictions: dict[str, set[str]] = dict(self._DEFAULT_RESTRICTIONS)
+        self.register(
+            name="stop_word_injection",
+            caller=_stop_word_caller,
+            chance=1.0,
+            count=1,
+            position="random",
+        )
+
+    def register(
+        self,
+        name: str,
+        caller: Callable[[Optional[dict]], str],
+        chance: float = 1.0,
+        count: int = 1,
+        position: str = "random",
+        params: dict | None = None,
+    ) -> None:
+        """
+        Register a post-processor that splices caller-produced tokens into the
+        output during the join phase.
+
+        Args:
+            name     : profile 'method' key that activates this post-processor.
+            caller   : fn(params: dict | None) -> str, invoked once per injection.
+            chance   : probability [0, 1] the post-processor runs per mutate() call.
+            count    : number of injection points to produce.
+            position : "random" | "start" | "end"
+            params   : forwarded verbatim to caller on every invocation.
+
+        Raises:
+            ValueError: if position is not one of the accepted values.
+        """
+        if position not in ("random", "start", "end"):
+            raise ValueError(
+                f"position must be 'random', 'start', or 'end'; got {position!r}"
+            )
+        self._registry[name] = PostProcessor(
+            name=name,
+            caller=caller,
+            chance=chance,
+            count=count,
+            position=position,
+            params=params or {},
+        )
+
+    def register_restriction(
+        self,
+        name: str,
+        permitted: set[str],
+    ) -> None:
+        """
+        Register or replace a restriction for a mutator.
+
+        Args:
+            name      : the restrictive mutator name (e.g. "sparse_stuffing").
+            permitted : set of mutator names allowed to co-apply on the same
+                        token. All others are blocked.
+
+        Example:
+            orchestrator.register_restriction("keyboard", {"casing_swap"})
+        """
+        self._restrictions[name] = permitted
+
+    def mutate(self, text: str, profile: list[dict], seed: int | None = None) -> str:
+        if seed is not None:
+            random.seed(seed)
+
+        if not text:
+            return text
+
+        # ------------------------------------------------------------------ #
+        # Stage 0 — invert_base: whole-string swapcase before split           #
+        # ------------------------------------------------------------------ #
+        for step in profile:
+            if step["method"] == "invert_base" and random.random() < step.get(
+                "chance", 1.0
+            ):
+                text = text.swapcase()
+                break  # only one invert_base makes sense
+
+        # ------------------------------------------------------------------ #
+        # Stage 1 — split once                                                #
+        # ------------------------------------------------------------------ #
+        tokens: list[str] = text.split()
+        n = len(tokens)
+        if n == 0:
+            return text
+
+        # ------------------------------------------------------------------ #
+        # Stage 2 — word_chunk_swap: determine two half-ranges                #
+        # ------------------------------------------------------------------ #
+        do_swap = any(
+            step["method"] == "word_chunk_swap"
+            and random.random() < step.get("chance", 1.0)
+            for step in profile
+        )
+        if do_swap and n >= 2:
+            mid = n // 2
+            range_a = (mid, n)  # second half iterated first
+            range_b = (0, mid)
+        else:
+            mid = n
+            range_a = (0, n)
+            range_b = None  # no second range
+
+        # ------------------------------------------------------------------ #
+        # Stage 3 — reverse flag                                              #
+        # ------------------------------------------------------------------ #
+        do_reverse = any(
+            step["method"] == "reverse" and random.random() < step.get("chance", 1.0)
+            for step in profile
+        )
+
+        # ------------------------------------------------------------------ #
+        # Stage 4 — precompute index sets for in-pass mutators                #
+        #                                                                      #
+        # Allocation order:                                                    #
+        #   4a. Parse active steps, separate restrictive vs unrestricted       #
+        #   4b. Hamilton-allocate min_mutations for restrictive mutators first #
+        #       from the full eligible pool → restrictive_indices              #
+        #   4c. free_pool = eligible - restrictive_indices                     #
+        #   4d. Hamilton-allocate min_mutations for unrestricted mutators      #
+        #       from free_pool only                                            #
+        #   4e. Strip any unrestricted index that landed on a restrictive      #
+        #       token and is not in that token's permitted co-mutator set      #
+        # ------------------------------------------------------------------ #
+
+        _STRUCTURAL = {"invert_base", "word_chunk_swap", "reverse"} | set(
+            self._registry
+        )
+
+        # Per-mutator config harvested from active profile steps
+        _cfg: dict[str, dict] = {}  # method -> {p, min_m, chance_passed}
+        for step in profile:
+            method = step["method"]
+            if method in _STRUCTURAL:
+                continue
+            if random.random() >= step.get("chance", 1.0):
+                continue
+            p = step.get("params", {})
+            min_m = step.get("min_mutations", p.get("min_mutations", 0))
+            _cfg[method] = {"p": p, "min_m": min_m}
+
+        # Shared eligibility pools
+        _all_eligible = [i for i, t in enumerate(tokens) if any(c.isalpha() for c in t)]
+
+        # --- 4b: Restrictive mutators first ---
+        _restrictive_names = [m for m in _cfg if m in self._restrictions]
+        _restrict_requests = [(m, _cfg[m]["min_m"]) for m in _restrictive_names]
+        _restrict_alloc = _hamilton_allocate(_restrict_requests, _all_eligible)
+
+        ocr_indices: set[int] = set()
+        stuffing_indices: set[int] = set()
+        ocr_char_prob: float = 0.3
+        stuffing_char_prob: float = 0.3
+        stuffing_sep: str = "."
+
+        _restrictive_indices: set[int] = set()
+
+        for method in _restrictive_names:
+            cfg = _cfg[method]
+            p, min_m = cfg["p"], _restrict_alloc[method]
+            # Select from the portion of the pool not yet claimed by other restrictors
+            local_pool = [i for i in _all_eligible if i not in _restrictive_indices]
+
+            if method == "sparse_stuffing":
+                stuffing_char_prob = p.get("char_prob", 0.3)
+                stuffing_sep = random.choice(p.get("symbols", "._*- "))
+                stuffing_indices |= _select_token_indices(
+                    tokens,
+                    p.get("word_prob", 0.4),
+                    min_m,
+                    predicate=lambda t: len(t) > 1,
+                )
+                _restrictive_indices |= stuffing_indices
+
+            elif method == "ocr":
+                ocr_char_prob = p.get("char_prob", 0.3)
+                ocr_indices |= _select_token_indices(
+                    tokens,
+                    p.get("token_prob", 0.3),
+                    min_m,
+                )
+                _restrictive_indices |= ocr_indices
+
+        # --- 4c: Free pool ---
+        _free_pool = [i for i in _all_eligible if i not in _restrictive_indices]
+
+        # --- 4d: Unrestricted mutators from free_pool only ---
+        _unrestricted_names = [m for m in _cfg if m not in self._restrictions]
+        _free_requests = [(m, _cfg[m]["min_m"]) for m in _unrestricted_names]
+        _free_alloc = _hamilton_allocate(_free_requests, _free_pool)
+
+        casing_swap_indices: set[int] = set()
+        casing_upper_indices: set[int] = set()
+        interval_char_indices: set[int] = set()
+        keyboard_indices: set[int] = set()
+        spelling_indices: set[int] = set()
+        nth_char_interval: int | None = None
+        interval_char_prob: float = 0.3
+        keyboard_char_prob: float = 0.3
+
+        # Wrap _select_token_indices to draw only from free_pool
+        def _select_free(min_m: int, token_prob: float, predicate=None) -> set[int]:
+            eligible = (
+                [i for i in _free_pool if predicate(tokens[i])]
+                if predicate
+                else [i for i in _free_pool if any(c.isalpha() for c in tokens[i])]
+            )
+            if not eligible:
+                return set()
+            forced_count = min(min_m, len(eligible))
+            forced = (
+                set(random.sample(eligible, k=forced_count)) if forced_count else set()
+            )
+            stochastic = {
+                i for i in eligible if i not in forced and random.random() < token_prob
+            }
+            return forced | stochastic
+
+        for method in _unrestricted_names:
+            cfg = _cfg[method]
+            p, min_m = cfg["p"], _free_alloc[method]
+
+            if method == "nth_strategy_word":
+                # Deterministic — all nth indices, unrestricted by pool
+                casing_upper_indices |= {i for i in range(0, n, p.get("interval", 2))}
+
+            elif method == "nth_strategy_char":
+                nth_char_interval = p.get("interval", 2)
+
+            elif method == "interval_flip_token":
+                casing_swap_indices |= _select_free(min_m, p.get("token_prob", 0.3))
+
+            elif method == "interval_flip_char":
+                interval_char_prob = p.get("char_prob", 0.3)
+                interval_char_indices |= _select_free(min_m, p.get("token_prob", 0.3))
+
+            elif method == "keyboard":
+                keyboard_char_prob = p.get("char_prob", 0.3)
+                keyboard_indices |= _select_free(min_m, p.get("token_prob", 0.3))
+
+            elif method == "spelling":
+                spelling_indices |= _select_free(
+                    min_m,
+                    p.get("token_prob", 0.3),
+                    predicate=_spelling_eligible,
+                )
+
+        # --- 4e: Strip unrestricted indices that co-land on restricted tokens ---
+        # For each restrictive mutator, remove co-landing unrestricted indices
+        # that are not in its permitted co-mutator set.
+        _name_to_index_set: dict[str, set[int]] = {
+            "casing_swap": casing_swap_indices,
+            "casing_upper": casing_upper_indices,
+            "interval_char": interval_char_indices,
+            "keyboard": keyboard_indices,
+            "spelling": spelling_indices,
+        }
+        for restrictor, permitted in self._restrictions.items():
+            restrictor_indices = (
+                stuffing_indices if restrictor == "sparse_stuffing" else ocr_indices
+            )
+            for co_name, co_set in _name_to_index_set.items():
+                if co_name not in permitted:
+                    co_set -= restrictor_indices
+
+        # ------------------------------------------------------------------ #
+        # Stage 5 — single pass: apply transforms in order per token          #
+        # OCR -> casing -> interval_flip -> sparse_stuffing                   #
+        # ------------------------------------------------------------------ #
+        def _process_token(i: int) -> str:
+            tok = tokens[i]
+
+            # 1. OCR
+            if i in ocr_indices:
+                tok = _apply_ocr(tok, ocr_char_prob)
+
+            # 2. Keyboard
+            if i in keyboard_indices:
+                tok = _apply_keyboard(tok, keyboard_char_prob)
+
+            # 3. Spelling
+            if i in spelling_indices:
+                tok = _apply_spelling(tok)
+
+            # 4. Casing: nth_strategy (word-level uppercase)
+            if i in casing_upper_indices:
+                tok = _apply_casing_uppercase(tok)
+
+            # 5. Casing: interval_flip token-level swapcase
+            if i in casing_swap_indices:
+                tok = _apply_casing_swapcase(tok)
+
+            # 6. nth_strategy char-level
+            if nth_char_interval is not None:
+                chars = list(tok)
+                for j in range(0, len(chars), nth_char_interval):
+                    if chars[j].isalpha():
+                        chars[j] = chars[j].upper()
+                tok = "".join(chars)
+
+            # 7. interval_flip char-level
+            if i in interval_char_indices:
+                tok = _apply_interval_flip_char(tok, interval_char_prob)
+
+            # 8. sparse_stuffing
+            if i in stuffing_indices:
+                tok = _apply_sparse_stuffing(tok, stuffing_sep, stuffing_char_prob)
+
+            return tok
+
+        # ------------------------------------------------------------------ #
+        # Stage 6 — build output with optional reverse, then post-processors  #
+        # ------------------------------------------------------------------ #
+
+        # Dispatch all registered post-processors referenced in the profile.
+        # chance/count/position on the profile step override the registration
+        # defaults, so callers can tune per-use without re-registering.
+        injection_map: dict[int, list[str]] = {}
+        for step in profile:
+            pp = self._registry.get(step["method"])
+            if pp is None:
+                continue
+            p = step.get("params", {})
+            # Allow profile step to override registration defaults
+            override = PostProcessor(
+                name=pp.name,
+                caller=pp.caller,
+                chance=step.get("chance", pp.chance),
+                count=p.get("count", pp.count),
+                position=p.get("position", pp.position),
+                params={**pp.params, **p},
+            )
+            for pos, words in override.build_injection_map(n).items():
+                injection_map.setdefault(pos, []).extend(words)
+
+        def _iter_range(start: int, stop: int, reverse: bool):
+            r = range(stop - 1, start - 1, -1) if reverse else range(start, stop)
+            for i in r:
+                # injections keyed by original index (pre-reverse), inserted before token
+                for w in injection_map.get(i, []):
+                    yield w
+                yield _process_token(i)
+
+        parts: list[str] = []
+        parts.extend(_iter_range(*range_a, do_reverse))
+        if range_b is not None:
+            parts.extend(_iter_range(*range_b, do_reverse))
+
+        # Trailing injections (position == n) only if no swap (original end)
+        if not do_swap:
+            for w in injection_map.get(n, []):
+                parts.append(w)
+
+        return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Demo
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    demo_texts = [
+        "The service was excellent.",
+        "Please send the report by 5:30 PM on Tuesday.",
+        "The quick brown fox jumps over the lazy dog.",
+    ]
+
+    orchestrator = MutationOrchestrator()
+
+    # --- Example: register a custom emoji injector ---
+    _EMOJIS = ["😀", "💯", "🔥", "✨", "😤", "👀", "💀", "🫡"]
+    orchestrator.register(
+        name="emoji_injection",
+        caller=lambda params: random.choice(params["pool"]) if params else "😀",
+        chance=1.0,
+        count=2,
+        position="random",
+        params={"pool": _EMOJIS},
+    )
+
+    profiles = [
+        (
+            "invert_base",
+            [
+                {"method": "invert_base", "chance": 1.0},
+            ],
+        ),
+        (
+            "nth_strategy_word",
+            [
+                {
+                    "method": "nth_strategy_word",
+                    "chance": 1.0,
+                    "params": {"interval": 2},
+                },
+            ],
+        ),
+        (
+            "nth_strategy_char",
+            [
+                {
+                    "method": "nth_strategy_char",
+                    "chance": 1.0,
+                    "params": {"interval": 2},
+                },
+            ],
+        ),
+        (
+            "interval_flip_token",
+            [
+                {
+                    "method": "interval_flip_token",
+                    "chance": 1.0,
+                    "params": {"token_prob": 0.6},
+                },
+            ],
+        ),
+        (
+            "interval_flip_char",
+            [
+                {
+                    "method": "interval_flip_char",
+                    "chance": 1.0,
+                    "params": {"token_prob": 0.5, "char_prob": 0.4},
+                },
+            ],
+        ),
+        (
+            "sparse_stuffing",
+            [
+                {
+                    "method": "sparse_stuffing",
+                    "chance": 1.0,
+                    "params": {"word_prob": 0.6, "char_prob": 0.4},
+                },
+            ],
+        ),
+        (
+            "word_chunk_swap",
+            [
+                {"method": "word_chunk_swap", "chance": 1.0},
+            ],
+        ),
+        (
+            "reverse",
+            [
+                {"method": "reverse", "chance": 1.0},
+            ],
+        ),
+        (
+            "word_chunk_swap + reverse",
+            [
+                {"method": "word_chunk_swap", "chance": 1.0},
+                {"method": "reverse", "chance": 1.0},
+            ],
+        ),
+        (
+            "stop_word_injection",
+            [
+                {
+                    "method": "stop_word_injection",
+                    "chance": 1.0,
+                    "params": {"count": 2},
+                },
+            ],
+        ),
+        (
+            "ocr",
+            [
+                {
+                    "method": "ocr",
+                    "chance": 1.0,
+                    "params": {"token_prob": 0.8, "char_prob": 0.6},
+                },
+            ],
+        ),
+        (
+            "keyboard",
+            [
+                {
+                    "method": "keyboard",
+                    "chance": 1.0,
+                    "params": {"token_prob": 0.5, "char_prob": 0.4},
+                },
+            ],
+        ),
+        (
+            "spelling",
+            [
+                {"method": "spelling", "chance": 1.0, "params": {"token_prob": 0.8}},
+            ],
+        ),
+        (
+            "emoji_injection",
+            [
+                {
+                    "method": "emoji_injection",
+                    "chance": 1.0,
+                    "params": {"count": 3, "position": "random"},
+                },
+            ],
+        ),
+        (
+            "emoji_injection (start)",
+            [
+                {
+                    "method": "emoji_injection",
+                    "chance": 1.0,
+                    "params": {"count": 1, "position": "start"},
+                },
+            ],
+        ),
+        (
+            "emoji_injection (end)",
+            [
+                {
+                    "method": "emoji_injection",
+                    "chance": 1.0,
+                    "params": {"count": 2, "position": "end"},
+                },
+            ],
+        ),
+        (
+            "orchestrated",
+            [
+                {"method": "invert_base", "chance": 0.3},
+                {
+                    "method": "ocr",
+                    "chance": 0.5,
+                    "params": {"token_prob": 0.4, "char_prob": 0.5},
+                },
+                {
+                    "method": "interval_flip_token",
+                    "chance": 0.7,
+                    "params": {"token_prob": 0.4},
+                },
+                {
+                    "method": "sparse_stuffing",
+                    "chance": 0.5,
+                    "params": {"word_prob": 0.35, "char_prob": 0.3},
+                },
+                {"method": "word_chunk_swap", "chance": 0.4},
+                {
+                    "method": "stop_word_injection",
+                    "chance": 0.6,
+                    "params": {"count": 1},
+                },
+            ],
+        ),
+    ]
+
+    for text in demo_texts:
+        print(f"\nINPUT: {text}")
+        for name, profile in profiles:
+            result = orchestrator.mutate(text, profile, seed=42)
+            print(f"  {name:<25}: {result}")

@@ -23,7 +23,6 @@ LANGUAGES = [
     "xml",
     "bash",
     "json",
-    "code"
 ]
 
 
@@ -36,7 +35,7 @@ def main():
         print(f"Original : {sentence}")
         print("Wrapped  :")
         # Run the language wrapper directly by name
-        wrapper_fn = getattr(changer, f"_{lang}_adv")
+        wrapper_fn = getattr(changer, f"_{lang}")
         print(wrapper_fn(sentence))
         print()
 

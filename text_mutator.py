@@ -56,6 +56,9 @@ OCR_MAP: dict[str, set[str]] = {
     "8": {"B"},
     "@": {"a", "A"},
     "$": {"s", "S"},
+    "\"": {"'"},
+    "9": {"g", "q"},
+    
 }
 # Inverted: char -> replacement digit/symbol choices
 _OCR_CHAR_MAP: dict[str, list[str]] = {}

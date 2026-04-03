@@ -33,7 +33,7 @@ def main():
         lang = __import__("random").choice(LANGUAGES)
         print(f"=== [{lang.upper()}] ===")
         print(f"Original : {sentence}")
-        rendered = changer.render_with_span(lang, sentence)
+        rendered = changer.code_format(lang, sentence)
         print("Wrapped  :")
         print(rendered["text"])
         print(f"Span     : {rendered['span']}")

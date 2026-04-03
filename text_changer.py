@@ -84,13 +84,13 @@ class TextChanger:
             raise ValueError(f"Unknown formatter: {method!r}")
         return fn(text)
 
-    def render_with_span(self, method: str, text: str) -> dict[str, object]:
+    def code_format(self, method: str, text: str) -> dict[str, object]:
         """
         Render a formatter output and return the exact payload span.
 
         The formatter is first rendered with a unique probe token, which is then
         replaced with the real payload. This keeps the payload single-use and
-        avoids having to duplicate the original text in the formatter template.
+        avoids having to duplicate the original text in the fsormatter template.
         """
         fn = getattr(self, f"_{method}", None)
         if fn is None:

@@ -66,65 +66,6 @@ class TextChanger:
             value = text
         return template.replace(self._payload_token, value)
 
-    def _materialize_with_span(
-        self, template: str, text: str, mode: str = "raw"
-    ) -> tuple[str, tuple[int, int]]:
-        """
-        Replace the placeholder once and return the payload span in the final string.
-
-        The span is computed from the template prefix length plus the rendered
-        payload length after any mode-specific escaping.
-        """
-        if template.count(self._payload_token) != 1:
-            raise ValueError(
-                f"template must contain exactly one {self._payload_token!r} token"
-            )
-
-        if mode == "json":
-            value = json.dumps(text, ensure_ascii=False)
-        elif mode == "xml":
-            value = html.escape(text, quote=True)
-        elif mode == "shell":
-            value = shlex.quote(text)
-        elif mode == "sql":
-            value = text.replace("'", "''")
-        else:
-            value = text
-
-        prefix, suffix = template.split(self._payload_token, 1)
-        rendered = prefix + value + suffix
-        span = (len(prefix), len(prefix) + len(value))
-        return rendered, span
-
-    def _make_payload_template(self, template: str) -> str:
-        """
-        Normalize templates so they contain exactly one payload placeholder.
-        """
-        if template.count(self._payload_token) != 1:
-            raise ValueError(
-                f"template must contain exactly one {self._payload_token!r} token"
-            )
-        return template
-
-    def _single_payload(self, text: str, template: str, mode: str = "raw") -> str:
-        """
-        Replace the payload token once and return the rendered string.
-
-        Use this for wrappers that should never duplicate the original content.
-        """
-        normalized = self._make_payload_template(template)
-        return self._materialize(normalized, text, mode=mode)
-
-    def _single_payload_with_span(
-        self, text: str, template: str, mode: str = "raw"
-    ) -> dict[str, object]:
-        """
-        Replace the payload token once and return both the rendered string and span.
-        """
-        normalized = self._make_payload_template(template)
-        rendered, span = self._materialize_with_span(normalized, text, mode=mode)
-        return {"text": rendered, "span": span}
-
     def _span_probe(self) -> str:
         """
         Generate a unique probe token that should be safe to embed in code/text.
@@ -168,21 +109,6 @@ class TextChanger:
         rendered = templated.replace(probe, text, 1)
         span = (start, start + len(text))
         return {"text": rendered, "span": span, "method": method}
-
-    def render_with_span(
-        self, template: str, text: str, mode: str = "raw"
-    ) -> dict[str, object]:
-        """
-        Public helper for NER pipelines.
-
-        Returns:
-            {
-                "text": <rendered string>,
-                "span": (start, end),
-            }
-        """
-        rendered, span = self._materialize_with_span(template, text, mode=mode)
-        return {"text": rendered, "span": span}
 
     # ------------------------------------------------------------------ #
     #  PYTHON                                                              #

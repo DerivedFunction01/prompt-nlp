@@ -53,8 +53,8 @@ def main():
         print("Wrapped  :")
         print(rendered["text"])
         print(f"Span     : {rendered['span']}")
-        start, end = rendered["span"]
-        print(f"Payload  : {rendered['text'][start:end]}")
+        start, end = rendered["span"] # type: ignore
+        print(f"Payload  : {rendered['text'][start:end]}") # type: ignore
         print()
 
 

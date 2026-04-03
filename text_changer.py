@@ -70,7 +70,7 @@ class TextChanger:
     #  PYTHON                                                              #
     # ------------------------------------------------------------------ #
 
-    def _python_adv(self, text: str) -> str:
+    def _python(self, text: str) -> str:
         fname = self._get_name()
         var = self._get_name()
         arg = self._get_name()
@@ -168,7 +168,7 @@ class TextChanger:
     #  JAVASCRIPT / TYPESCRIPT                                            #
     # ------------------------------------------------------------------ #
 
-    def _javascript_adv(self, text: str) -> str:
+    def _javascript(self, text: str) -> str:
         fname = self._get_name()
         var = self._get_name()
         arr = self._get_name()
@@ -230,7 +230,7 @@ class TextChanger:
         ]
         return random.choice(variants)
 
-    def _typescript_adv(self, text: str) -> str:
+    def _typescript(self, text: str) -> str:
         fname = self._get_name()
         var = self._get_name()
         cls = self._get_class_name()
@@ -284,7 +284,7 @@ class TextChanger:
     #  JAVA                                                                #
     # ------------------------------------------------------------------ #
 
-    def _java_adv(self, text: str) -> str:
+    def _java(self, text: str) -> str:
         method = self._get_name()
         cls = self._get_class_name()
         var = self._get_name()
@@ -355,7 +355,7 @@ class TextChanger:
     #  C#                                                                  #
     # ------------------------------------------------------------------ #
 
-    def _csharp_adv(self, text: str) -> str:
+    def _csharp(self, text: str) -> str:
         cls = self._get_class_name()
         method = self._get_name()
         var = self._get_name()
@@ -418,7 +418,7 @@ class TextChanger:
     #  GO                                                                  #
     # ------------------------------------------------------------------ #
 
-    def _go_adv(self, text: str) -> str:
+    def _go(self, text: str) -> str:
         fn = self._get_name()
         var = self._get_name()
         pkg = self._get_id()
@@ -470,7 +470,7 @@ class TextChanger:
     #  RUBY                                                                #
     # ------------------------------------------------------------------ #
 
-    def _ruby_adv(self, text: str) -> str:
+    def _ruby(self, text: str) -> str:
         method = self._get_name()
         var = self._get_name()
         cls = self._get_class_name()
@@ -521,7 +521,7 @@ class TextChanger:
     #  RUST                                                                #
     # ------------------------------------------------------------------ #
 
-    def _rust_adv(self, text: str) -> str:
+    def _rust(self, text: str) -> str:
         fn = self._get_name()
         var = self._get_name()
         struct = self._get_class_name()
@@ -583,7 +583,7 @@ class TextChanger:
     #  PHP                                                                 #
     # ------------------------------------------------------------------ #
 
-    def _php_adv(self, text: str) -> str:
+    def _php(self, text: str) -> str:
         fn = self._get_name()
         var = self._get_name()
         cls = self._get_class_name()
@@ -635,7 +635,7 @@ class TextChanger:
     #  SQL                                                                 #
     # ------------------------------------------------------------------ #
 
-    def _sql_adv(self, text: str) -> str:
+    def _sql(self, text: str) -> str:
         table = self._get_name()
         col1, col2 = self._get_id(), self._get_id()
         alias = self._get_id()
@@ -673,7 +673,7 @@ class TextChanger:
     #  XML                                                                 #
     # ------------------------------------------------------------------ #
 
-    def _xml_adv(self, text: str) -> str:
+    def _xml(self, text: str) -> str:
         root = self._get_name()
         child = self._get_name()
         attr = self._get_id()
@@ -708,7 +708,7 @@ class TextChanger:
     #  MARKDOWN                                                           #
     # ------------------------------------------------------------------ #
 
-    def _markdown_adv(self, text: str) -> str:
+    def _markdown(self, text: str) -> str:
         units = [part for part in text.splitlines() if part.strip()]
         if "\n\n" in text or len(units) >= 3:
             units = [part.strip() for part in text.split("\n\n") if part.strip()]
@@ -738,7 +738,7 @@ class TextChanger:
     #  BASH / SHELL / SCRIPT                                              #
     # ------------------------------------------------------------------ #
 
-    def _bash_adv(self, text: str) -> str:
+    def _bash(self, text: str) -> str:
         var = self._get_name()
         fn = self._get_name()
         q = self._quoted(text)
@@ -796,15 +796,15 @@ class TextChanger:
         ]
         return random.choice(variants)
 
-    def _script_adv(self, text: str) -> str:
+    def _script(self, text: str) -> str:
         """Alias kept for backward compatibility — delegates to bash."""
-        return self._bash_adv(text)
+        return self._bash(text)
 
     # ------------------------------------------------------------------ #
     #  JSON                                                                #
     # ------------------------------------------------------------------ #
 
-    def _json_adv(self, text: str) -> str:
+    def _json(self, text: str) -> str:
         key1 = self._get_id()
         key2 = self._get_id()
         key3 = self._get_id()
@@ -843,21 +843,21 @@ class TextChanger:
 
     def _register_all_wrappers(self) -> None:
         wrappers = {
-            "python": self._python_adv,
-            "javascript": self._javascript_adv,
-            "typescript": self._typescript_adv,
-            "java": self._java_adv,
-            "csharp": self._csharp_adv,
-            "go": self._go_adv,
-            "ruby": self._ruby_adv,
-            "rust": self._rust_adv,
-            "php": self._php_adv,
-            "sql": self._sql_adv,
-            "xml": self._xml_adv,
-            "markdown": self._markdown_adv,
-            "bash": self._bash_adv,
-            "script": self._script_adv,
-            "json": self._json_adv,
+            "python": self._python,
+            "javascript": self._javascript,
+            "typescript": self._typescript,
+            "java": self._java,
+            "csharp": self._csharp,
+            "go": self._go,
+            "ruby": self._ruby,
+            "rust": self._rust,
+            "php": self._php,
+            "sql": self._sql,
+            "xml": self._xml,
+            "markdown": self._markdown,
+            "bash": self._bash,
+            "script": self._script,
+            "json": self._json,
         }
         for name, fn in wrappers.items():
             self._register_wrapper(name, fn)

@@ -25,9 +25,6 @@ class TextChanger:
     def code_format(self, method: str, text: str) -> dict[str, object]:
         return self.formatter.code_format(method, text)
 
-    def render_with_span(self, method: str, text: str) -> dict[str, object]:
-        return self.formatter.code_format(method, text)
-
     def compose(
         self,
         text: str,

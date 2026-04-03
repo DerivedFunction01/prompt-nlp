@@ -403,7 +403,7 @@ def _stop_word_caller(params: dict | None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# PostProcessor — registered post-processor contract
+# RegisteredMutation — registry contract for token-level and post-process ops
 # ---------------------------------------------------------------------------
 
 from dataclasses import dataclass, field
@@ -411,22 +411,23 @@ from typing import Callable, Optional
 
 
 @dataclass
-class PostProcessor:
+class RegisteredMutation:
     """
-    A named post-processor that splices caller-produced tokens into the output
-    during the join phase.
+    A named registered mutation.
 
     Fields:
         name     : registry key — must match the 'method' string in a profile step
-        caller   : fn(params: dict | None) -> str, called once per injection point
+        kind     : "token" or "post_process"
+        transform : token-level or post-process callable
         chance   : probability the post-processor fires per mutate() call
-        count    : number of injection points to generate
-        position : "random" | "start" | "end"
-        params   : arbitrary extra data forwarded to caller on each invocation
+        count    : number of injection points to generate for post-process ops
+        position : "random" | "start" | "end" for post-process ops
+        params   : arbitrary extra data forwarded to the callable
     """
 
     name: str
-    caller: Callable[[Optional[dict]], str]
+    kind: str
+    transform: Callable[..., str]
     chance: float = 1.0
     count: int = 1
     position: str = "random"
@@ -445,7 +446,7 @@ class PostProcessor:
             return {}
         injection: dict[int, list[str]] = {}
         for pos in self._resolve_positions(n):
-            injection.setdefault(pos, []).append(self.caller(self.params or None))
+            injection.setdefault(pos, []).append(self.transform(self.params or None))
         return injection
 
 
@@ -468,7 +469,7 @@ class MutationOrchestrator:
         "keyboard"            params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "spelling"            params: {token_prob: float}
 
-    Registered post-processors are referenced by their name as 'method' in a
+    Registered mutations are referenced by their name as 'method' in a
     profile step, identical to built-ins. Use register() to add them.
     """
 
@@ -483,48 +484,60 @@ class MutationOrchestrator:
 
     def __init__(self) -> None:
         # stop_word_injection is pre-registered so it is dispatched identically
-        # to any user-registered post-processor at join time.
-        self._registry: dict[str, PostProcessor] = {}
+        # to any user-registered post-process mutation at join time.
+        self._registry: dict[str, RegisteredMutation] = {}
         self._restrictions: dict[str, set[str]] = dict(self._DEFAULT_RESTRICTIONS)
         self.register(
             name="stop_word_injection",
-            caller=_stop_word_caller,
+            transform=_stop_word_caller,
             chance=1.0,
             count=1,
             position="random",
+            kind="post_process",
         )
 
     def register(
         self,
         name: str,
-        caller: Callable[[Optional[dict]], str],
+        caller: Callable[..., str] | None = None,
+        transform: Callable[..., str] | None = None,
         chance: float = 1.0,
         count: int = 1,
         position: str = "random",
         params: dict | None = None,
+        kind: str = "post_process",
     ) -> None:
         """
-        Register a post-processor that splices caller-produced tokens into the
-        output during the join phase.
+        Register a mutation.
 
         Args:
-            name     : profile 'method' key that activates this post-processor.
-            caller   : fn(params: dict | None) -> str, invoked once per injection.
-            chance   : probability [0, 1] the post-processor runs per mutate() call.
-            count    : number of injection points to produce.
+            name     : profile 'method' key that activates this mutation.
+            caller   : backward-compatible callable alias for transform.
+            transform : callable for the registered mutation.
+                       - kind="token": callable(token: str, params: dict | None) -> str
+                       - kind="post_process": callable(params: dict | None) -> str
+            chance   : probability [0, 1] the mutation runs per mutate() call.
+            count    : number of injection points to produce for post-process ops.
             position : "random" | "start" | "end"
-            params   : forwarded verbatim to caller on every invocation.
+            params   : forwarded verbatim to the callable on every invocation.
+            kind     : "token" or "post_process"
 
         Raises:
-            ValueError: if position is not one of the accepted values.
+            ValueError: if kind or position are not one of the accepted values.
         """
+        if kind not in ("token", "post_process"):
+            raise ValueError(f"kind must be 'token' or 'post_process'; got {kind!r}")
         if position not in ("random", "start", "end"):
             raise ValueError(
                 f"position must be 'random', 'start', or 'end'; got {position!r}"
             )
-        self._registry[name] = PostProcessor(
+        fn = transform or caller
+        if fn is None:
+            raise ValueError("register() requires either caller or transform")
+        self._registry[name] = RegisteredMutation(
             name=name,
-            caller=caller,
+            kind=kind,
+            transform=fn,
             chance=chance,
             count=count,
             position=position,
@@ -747,8 +760,11 @@ class MutationOrchestrator:
         # ------------------------------------------------------------------ #
 
         _STRUCTURAL = {"invert_base", "word_chunk_swap", "reverse"} | set(
-            self._registry
+            name for name, reg in self._registry.items() if reg.kind == "post_process"
         )
+        _TOKEN_CUSTOM = {
+            name for name, reg in self._registry.items() if reg.kind == "token"
+        }
 
         # Per-mutator config harvested from active profile steps
         _cfg: dict[str, dict] = {}  # method -> {p, min_m, chance_passed}
@@ -813,6 +829,7 @@ class MutationOrchestrator:
         _unrestricted_names = [m for m in _cfg if m not in self._restrictions]
         _free_requests = [(m, _cfg[m]["min_m"]) for m in _unrestricted_names]
         _free_alloc = _hamilton_allocate(_free_requests, _free_pool)
+        _custom_token_methods = [m for m in _unrestricted_names if m in _TOKEN_CUSTOM]
 
         casing_swap_indices: set[int] = set()
         casing_upper_indices: set[int] = set()
@@ -820,6 +837,7 @@ class MutationOrchestrator:
         keyboard_indices: set[int] = set()
         spelling_indices: set[int] = set()
         pig_latin_indices: set[int] = set()
+        custom_token_indices: dict[str, set[int]] = {}
         nth_char_interval: int | None = None
         interval_char_prob: float = 0.3
         keyboard_char_prob: float = 0.3
@@ -880,6 +898,13 @@ class MutationOrchestrator:
                     predicate=lambda t: t.strip(_STRIP_CHARS).isalpha(),
                 )
 
+            elif method in _TOKEN_CUSTOM:
+                custom_token_indices[method] = _select_free(
+                    min_m,
+                    p.get("token_prob", 0.3),
+                    predicate=lambda t: bool(t.strip()),
+                )
+
         # --- 4e: Strip unrestricted indices that co-land on restricted tokens ---
         # For each restrictive mutator, remove co-landing unrestricted indices
         # that are not in its permitted co-mutator set.
@@ -891,6 +916,7 @@ class MutationOrchestrator:
             "spelling": spelling_indices,
             "pig_latin": pig_latin_indices,
         }
+        _name_to_index_set.update(custom_token_indices)
         for restrictor, permitted in self._restrictions.items():
             restrictor_indices = (
                 stuffing_indices if restrictor == "sparse_stuffing" else ocr_indices
@@ -946,6 +972,12 @@ class MutationOrchestrator:
             if i in stuffing_indices:
                 tok = _apply_sparse_stuffing(tok, stuffing_sep, stuffing_char_prob)
 
+            # 10. registered token-level custom mutations
+            for method in _custom_token_methods:
+                if i in custom_token_indices.get(method, set()):
+                    reg = self._registry[method]
+                    tok = reg.transform(tok, _cfg[method]["p"])
+
             return tok
 
         # ------------------------------------------------------------------ #
@@ -958,13 +990,14 @@ class MutationOrchestrator:
         injection_map: dict[int, list[str]] = {}
         for step in profile:
             pp = self._registry.get(step["method"])
-            if pp is None:
+            if pp is None or pp.kind != "post_process":
                 continue
             p = step.get("params", {})
             # Allow profile step to override registration defaults
-            override = PostProcessor(
+            override = RegisteredMutation(
                 name=pp.name,
-                caller=pp.caller,
+                kind=pp.kind,
+                transform=pp.transform,
                 chance=step.get("chance", pp.chance),
                 count=p.get("count", pp.count),
                 position=p.get("position", pp.position),
@@ -1011,11 +1044,12 @@ if __name__ == "__main__":
     _EMOJIS = ["😀", "💯", "🔥", "✨", "😤", "👀", "💀", "🫡"]
     orchestrator.register(
         name="emoji_injection",
-        caller=lambda params: random.choice(params["pool"]) if params else "😀",
+        transform=lambda params: random.choice(params["pool"]) if params else "😀",
         chance=1.0,
         count=2,
         position="random",
         params={"pool": _EMOJIS},
+        kind="post_process",
     )
 
     profiles = [

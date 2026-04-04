@@ -49,7 +49,7 @@ _COMPOSITE_RECIPE_ORDER: tuple[str, ...] = (
     "salad",
     "nshot",
     "format",
-    "intent",
+    "salad_intent",
 )
 _COMPOSITE_RECIPE_ANCHORS: tuple[str, ...] = (
     "persona",
@@ -850,8 +850,6 @@ class DecisionTreeComposer:
             return self._pool_has("nshot")
         if kind == "salad":
             return self._pool_has("salad")
-        if kind == "intent":
-            return not self._intent_rows().empty
         if kind == "jailbreak":
             return self._pool_has(self._adverse_pool_name())
         if kind == "salad_intent":
@@ -877,7 +875,7 @@ class DecisionTreeComposer:
             row = self._sample_pool_row("nshot")
         elif kind == "salad":
             row = self._sample_salad_row(intent_only=False)
-        elif kind in {"intent", "salad_intent"}:
+        elif kind == "salad_intent":
             row = self._sample_salad_row(intent_only=True)
         elif kind == "jailbreak":
             row = self._sample_pool_row(self._adverse_pool_name())
@@ -896,7 +894,7 @@ class DecisionTreeComposer:
             return self._sample_pool_row("nshot")
         if kind == "salad":
             return self._sample_salad_row(intent_only=False)
-        if kind in {"intent", "salad_intent"}:
+        if kind == "salad_intent":
             return self._sample_salad_row(intent_only=True)
         if kind == "jailbreak":
             return self._sample_pool_row(self._adverse_pool_name())

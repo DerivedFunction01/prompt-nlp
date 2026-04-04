@@ -40,6 +40,49 @@ INTENT_CATEGORIES = {
 JAILBREAK_MODEL_RE = re.compile(r"\bModel:\s*(.+?)(?:,|\s*$)")
 JAILBREAK_ORG_RE = re.compile(r"\bOrg:\s*(.+?)(?:,|\s*$)")
 
+COMPOSITE_RECIPE_SPECS: dict[str, dict[str, Any]] = {
+    "persona_plus_nshot_plus_intent": {
+        "parts": ["persona", "nshot", "intent"],
+        "target": "last",
+        "filler_kinds": ["salad_intent"],
+    },
+    "persona_plus_format": {
+        "parts": ["persona", "format"],
+        "target": "last",
+        "filler_kinds": ["format"],
+    },
+    "jailbreak_plus_intent": {
+        "parts": ["jailbreak", "intent"],
+        "target": "last",
+        "filler_kinds": ["jailbreak", "salad_intent"],
+    },
+    "benign_plus_format": {
+        "parts": ["benign", "format"],
+        "target": "last",
+        "filler_kinds": ["format"],
+    },
+    "benign_plus_adverse": {
+        "parts": ["benign", "adverse"],
+        "target": "last",
+        "filler_kinds": ["adverse"],
+    },
+    "salad_plus_salad": {
+        "parts": ["salad", "salad"],
+        "target": "first",
+        "filler_kinds": ["salad"],
+    },
+    "jailbreak_plus_jailbreak": {
+        "parts": ["jailbreak", "jailbreak"],
+        "target": "first",
+        "filler_kinds": ["jailbreak"],
+    },
+    "persona_plus_persona": {
+        "parts": ["persona", "persona"],
+        "target": "first",
+        "filler_kinds": ["persona"],
+    },
+}
+
 _TEXT_CHANGER_CACHE: Any = None
 
 
@@ -703,12 +746,7 @@ class DecisionTreeComposer:
             if len(assembled_text) >= min_chars:
                 break
             pool_name = self._choice(filler_pools)
-            if pool_name == "salad":
-                row = self._sample_salad_row(intent_only=False)
-            elif pool_name == "salad_intent":
-                row = self._sample_salad_row(intent_only=True)
-            else:
-                row = self._sample_pool_row(pool_name)
+            row = self._sample_composite_row(pool_name)
             working.append(self._segment_from_row(row))
         return working
 
@@ -793,6 +831,116 @@ class DecisionTreeComposer:
             if pool is not None and not pool.empty:
                 return self._sample_pool_row(pool_name)
         return self._sample_pool_row("all")
+
+    def _pool_has(self, pool_name: str) -> bool:
+        pool = self.pools.get(pool_name)
+        return pool is not None and not pool.empty
+
+    def _composite_pool_has(self, kind: str) -> bool:
+        if kind == "benign":
+            return self._pool_has("benign")
+        if kind == "persona":
+            return self._pool_has("persona")
+        if kind == "format":
+            return self._pool_has("format")
+        if kind == "nshot":
+            return self._pool_has("nshot")
+        if kind == "salad":
+            return self._pool_has("salad")
+        if kind == "intent":
+            return not self._intent_rows().empty
+        if kind in {"jailbreak", "adverse"}:
+            return self._pool_has(self._adverse_pool_name())
+        if kind == "salad_intent":
+            return self._pool_has("salad") and not self._intent_rows().empty
+        return False
+
+    def _available_composite_recipe_names(self) -> list[str]:
+        available: list[str] = []
+        for recipe_name, spec in COMPOSITE_RECIPE_SPECS.items():
+            required_kinds = list(spec.get("parts", ()))
+            if all(self._composite_pool_has(kind) for kind in required_kinds):
+                available.append(recipe_name)
+        return available
+
+    def _sample_composite_segment(self, kind: str) -> dict[str, Any]:
+        if kind == "benign":
+            row = self._sample_pool_row("benign")
+        elif kind == "persona":
+            row = self._pick_persona_row()
+        elif kind == "format":
+            row = self._sample_pool_row("format")
+        elif kind == "nshot":
+            row = self._sample_pool_row("nshot")
+        elif kind == "salad":
+            row = self._sample_salad_row(intent_only=False)
+        elif kind in {"intent", "salad_intent"}:
+            row = self._sample_salad_row(intent_only=True)
+        elif kind in {"jailbreak", "adverse"}:
+            row = self._sample_pool_row(self._adverse_pool_name())
+        else:
+            raise ValueError(f"Unknown composite source kind: {kind!r}")
+        return self._segment_from_row(row)
+
+    def _sample_composite_row(self, kind: str) -> pd.Series:
+        if kind == "benign":
+            return self._sample_pool_row("benign")
+        if kind == "persona":
+            return self._pick_persona_row()
+        if kind == "format":
+            return self._sample_pool_row("format")
+        if kind == "nshot":
+            return self._sample_pool_row("nshot")
+        if kind == "salad":
+            return self._sample_salad_row(intent_only=False)
+        if kind in {"intent", "salad_intent"}:
+            return self._sample_salad_row(intent_only=True)
+        if kind in {"jailbreak", "adverse"}:
+            return self._sample_pool_row(self._adverse_pool_name())
+        raise ValueError(f"Unknown composite source kind: {kind!r}")
+
+    def _compose_composite_recipe_data(
+        self,
+        recipe_name: str,
+        row_id: int,
+    ) -> dict[str, Any] | None:
+        spec = COMPOSITE_RECIPE_SPECS.get(recipe_name)
+        if spec is None:
+            return None
+
+        parts = list(spec.get("parts", ()))
+        if not parts or not all(self._composite_pool_has(kind) for kind in parts):
+            return None
+
+        segments = [self._sample_composite_segment(kind) for kind in parts]
+        segments = self._append_fillers(
+            segments,
+            filler_pools=list(spec.get("filler_kinds", ())),
+            min_chars=self.config.min_assembled_chars,
+            max_fill_segments=self.config.max_fill_segments,
+        )
+        target_mode = str(spec.get("target", "last"))
+        if target_mode == "first":
+            target_segment = segments[0]
+        else:
+            target_segment = segments[-1]
+
+        segments = self._shuffle_composite_segments(segments)
+
+        target_category = target_segment["label"]
+        target_intent = target_category if target_category in INTENT_CATEGORIES else ""
+        category = target_category or segments[0]["label"]
+        if not category:
+            category = segments[0]["label"]
+
+        return {
+            "recipe_name": recipe_name,
+            "category": category,
+            "target_category": target_category or category,
+            "target_intent": target_intent,
+            "segments": segments,
+            "target_segment": target_segment,
+        }
 
     def _build_preserved_row(self, row_id: int) -> dict[str, Any]:
         base = self._sample_preserved_row()
@@ -897,17 +1045,14 @@ class DecisionTreeComposer:
             return self._choice(fallback)
         return self._choice([name for name, size in pool_weights if size > 0])
 
-    def _composite_recipe(self) -> str:
-        choices = [
-            "persona_plus_nshot_plus_intent",
-            "persona_plus_format",
-            "jailbreak_plus_intent",
-            "benign_plus_format",
-            "salad_plus_salad",
-            "jailbreak_plus_jailbreak",
-            "persona_plus_persona",
-        ]
-        return self._choice(choices)
+    def _composite_recipe(self) -> str | None:
+        choices = self._available_composite_recipe_names()
+        if choices:
+            return self._choice(choices)
+        return None
+
+    def _adverse_pool_name(self) -> str:
+        return "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
 
     def _transform_recipe(self) -> str:
         return self._choice(["obfuscated", "mutated"])
@@ -1027,83 +1172,21 @@ class DecisionTreeComposer:
         }
 
     def _build_composite_row(self, recipe_name: str, row_id: int) -> dict[str, Any]:
-        segments: list[dict[str, Any]] = []
-        target_category = ""
-        target_intent = ""
-        filler_pools: list[str] = []
-
-        if recipe_name == "persona_plus_nshot_plus_intent":
-            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_salad_row(intent_only=False)))
-            nshot = self._segment_from_row(self._sample_pool_row("nshot"))
-            intent_row = self._sample_salad_row(intent_only=True)
-            intent = self._segment_from_row(intent_row)
-            segments = [persona, nshot, intent]
-            target_category = intent["label"]
-            target_intent = intent["label"]
-            filler_pools = ["salad_intent"]
-        elif recipe_name == "persona_plus_format":
-            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("cais_mmlu")))
-            fmt = self._segment_from_row(self._sample_pool_row("format"))
-            segments = [persona, fmt]
-            target_category = fmt["label"] or persona["label"]
-            filler_pools = ["format"]
-        elif recipe_name == "jailbreak_plus_intent":
-            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
-            jailbreak = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            intent_row = self._sample_salad_row(intent_only=True)
-            intent = self._segment_from_row(intent_row)
-            segments = [jailbreak, intent]
-            target_category = intent["label"]
-            target_intent = intent["label"]
-            filler_pools = [jailbreak_pool, "salad_intent"]
-        elif recipe_name == "benign_plus_format":
-            benign = self._segment_from_row(self._sample_pool_row("benign"))
-            fmt = self._segment_from_row(self._sample_pool_row("format"))
-            segments = [benign, fmt]
-            target_category = fmt["label"] or benign["label"]
-            filler_pools = ["format"]
-        elif recipe_name == "salad_plus_salad":
-            first = self._segment_from_row(self._sample_salad_row(intent_only=False))
-            second = self._segment_from_row(self._sample_salad_row(intent_only=False))
-            segments = [first, second]
-            target_category = first["label"]
-            target_intent = first["label"] if first["label"] in INTENT_CATEGORIES else ""
-            filler_pools = ["salad"]
-        elif recipe_name == "jailbreak_plus_jailbreak":
-            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
-            first = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            second = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            segments = [first, second]
-            target_category = first["label"]
-            filler_pools = [jailbreak_pool]
-        elif recipe_name == "persona_plus_persona":
-            first = self._segment_from_row(self._pick_persona_row())
-            second = self._segment_from_row(self._pick_persona_row())
-            segments = [first, second]
-            target_category = first["label"]
-            filler_pools = ["persona"]
-        else:
+        data = self._compose_composite_recipe_data(recipe_name, row_id)
+        if data is None:
             return self._build_standalone_row("standalone_benign", row_id)
 
-        segments = self._append_fillers(
-            segments,
-            filler_pools=filler_pools,
-            min_chars=self.config.min_assembled_chars,
-            max_fill_segments=self.config.max_fill_segments,
-        )
-        segments = self._shuffle_composite_segments(segments)
+        segments = data["segments"]
         rendered_segments = self._render_segments(segments, row_seed=row_id)
         assembled_text, spans = self._join_segments(rendered_segments)
-        category = target_category or segments[0]["label"]
-        if not category:
-            category = segments[0]["label"]
+        category = data["category"] or segments[0]["label"]
         return {
             "row_id": f"row_{row_id:06d}",
             "recipe_type": "composite",
-            "assembly_type": recipe_name,
+            "assembly_type": data["recipe_name"],
             "category": category,
-            "target_category": target_category or category,
-            "target_intent": target_intent,
+            "target_category": data["target_category"] or category,
+            "target_intent": data["target_intent"],
             "source": segments[0]["source"],
             "dataset_source": segments[0]["dataset_source"],
             "metadata": segments[0]["metadata"],
@@ -1214,82 +1297,20 @@ class DecisionTreeComposer:
         }
 
     def _plan_composite_row(self, recipe_name: str, row_id: int) -> dict[str, Any]:
-        segments: list[dict[str, Any]] = []
-        target_category = ""
-        target_intent = ""
-        filler_pools: list[str] = []
-
-        if recipe_name == "persona_plus_nshot_plus_intent":
-            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_salad_row(intent_only=False)))
-            nshot = self._segment_from_row(self._sample_pool_row("nshot"))
-            intent_row = self._sample_salad_row(intent_only=True)
-            intent = self._segment_from_row(intent_row)
-            segments = [persona, nshot, intent]
-            target_category = intent["label"]
-            target_intent = intent["label"]
-            filler_pools = ["salad_intent"]
-        elif recipe_name == "persona_plus_format":
-            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("cais_mmlu")))
-            fmt = self._segment_from_row(self._sample_pool_row("format"))
-            segments = [persona, fmt]
-            target_category = fmt["label"] or persona["label"]
-            filler_pools = ["format"]
-        elif recipe_name == "jailbreak_plus_intent":
-            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
-            jailbreak = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            intent_row = self._sample_salad_row(intent_only=True)
-            intent = self._segment_from_row(intent_row)
-            segments = [jailbreak, intent]
-            target_category = intent["label"]
-            target_intent = intent["label"]
-            filler_pools = [jailbreak_pool, "salad_intent"]
-        elif recipe_name == "benign_plus_format":
-            benign = self._segment_from_row(self._sample_pool_row("benign"))
-            fmt = self._segment_from_row(self._sample_pool_row("format"))
-            segments = [benign, fmt]
-            target_category = fmt["label"] or benign["label"]
-            filler_pools = ["format"]
-        elif recipe_name == "salad_plus_salad":
-            first = self._segment_from_row(self._sample_salad_row(intent_only=False))
-            second = self._segment_from_row(self._sample_salad_row(intent_only=False))
-            segments = [first, second]
-            target_category = first["label"]
-            target_intent = first["label"] if first["label"] in INTENT_CATEGORIES else ""
-            filler_pools = ["salad"]
-        elif recipe_name == "jailbreak_plus_jailbreak":
-            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
-            first = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            second = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            segments = [first, second]
-            target_category = first["label"]
-            filler_pools = [jailbreak_pool]
-        elif recipe_name == "persona_plus_persona":
-            first = self._segment_from_row(self._pick_persona_row())
-            second = self._segment_from_row(self._pick_persona_row())
-            segments = [first, second]
-            target_category = first["label"]
-            filler_pools = ["persona"]
-        else:
+        data = self._compose_composite_recipe_data(recipe_name, row_id)
+        if data is None:
             return self._plan_standalone_row("standalone_benign", row_id)
 
-        segments = self._append_fillers(
-            segments,
-            filler_pools=filler_pools,
-            min_chars=self.config.min_assembled_chars,
-            max_fill_segments=self.config.max_fill_segments,
-        )
-        segments = self._shuffle_composite_segments(segments)
-        category = target_category or segments[0]["label"]
-        if not category:
-            category = segments[0]["label"]
+        segments = data["segments"]
+        category = data["category"] or segments[0]["label"]
         return {
             "row_id": f"row_{row_id:06d}",
             "row_seed": row_id,
             "recipe_type": "composite",
-            "assembly_type": recipe_name,
+            "assembly_type": data["recipe_name"],
             "category": category,
-            "target_category": target_category or category,
-            "target_intent": target_intent,
+            "target_category": data["target_category"] or category,
+            "target_intent": data["target_intent"],
             "source": segments[0]["source"],
             "dataset_source": segments[0]["dataset_source"],
             "metadata": segments[0]["metadata"],
@@ -1297,10 +1318,10 @@ class DecisionTreeComposer:
             "base_row": {
                 "row_id": f"row_{row_id:06d}",
                 "recipe_type": "composite",
-                "assembly_type": recipe_name,
+                "assembly_type": data["recipe_name"],
                 "category": category,
-                "target_category": target_category or category,
-                "target_intent": target_intent,
+                "target_category": data["target_category"] or category,
+                "target_intent": data["target_intent"],
                 "source": segments[0]["source"],
                 "dataset_source": segments[0]["dataset_source"],
                 "metadata": segments[0]["metadata"],
@@ -1374,7 +1395,10 @@ class DecisionTreeComposer:
         if recipe_type == "standalone":
             return self._plan_standalone_row(self._standalone_recipe(), index)
         if recipe_type == "composite":
-            return self._plan_composite_row(self._composite_recipe(), index)
+            recipe_name = self._composite_recipe()
+            if recipe_name is None:
+                return self._plan_standalone_row("standalone_benign", index)
+            return self._plan_composite_row(recipe_name, index)
         return self._plan_transform_row(recipe_type, index)
 
     def _build_parallel(
@@ -1410,7 +1434,10 @@ class DecisionTreeComposer:
         if recipe_type == "standalone":
             return self._build_standalone_row(self._standalone_recipe(), index)
         if recipe_type == "composite":
-            return self._build_composite_row(self._composite_recipe(), index)
+            recipe_name = self._composite_recipe()
+            if recipe_name is None:
+                return self._build_standalone_row("standalone_benign", index)
+            return self._build_composite_row(recipe_name, index)
         return self._build_transform_row(recipe_type, index)
 
     def build(

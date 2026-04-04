@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import argparse
+from concurrent.futures import ProcessPoolExecutor
 import re
 
 import numpy as np
@@ -92,6 +93,178 @@ def _is_blank_cell(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip() == ""
     return False
+
+
+def _render_plan_segment(
+    segment: dict[str, Any],
+    *,
+    row_seed: int,
+    segment_index: int,
+    prompt_editor_cls: Any,
+    persona_compact: bool = False,
+) -> dict[str, Any]:
+    rendered = dict(segment)
+    label = rendered.get("label", "")
+    text = str(rendered.get("text", ""))
+
+    if label == PromptEntity.NSHOT.value and prompt_editor_cls is not None:
+        editor_kwargs: dict[str, Any] = {"seed": row_seed + segment_index}
+        model_name = str(rendered.get("prompt_editor_model_name") or "").strip()
+        model_org = str(rendered.get("prompt_editor_model_org") or "").strip()
+        if model_name:
+            editor_kwargs["model_name"] = model_name
+        if model_org:
+            editor_kwargs["model_org"] = model_org
+        editor = prompt_editor_cls(**editor_kwargs)
+        try:
+            output = editor.compose(texts=[text], categories=[PromptEntity.NSHOT.value])
+            if output:
+                text = str(output[0].get("text", text))
+                rendered["render_branch"] = output[0].get("branch")
+                rendered["render_variant"] = output[0].get("variant")
+        except Exception:
+            pass
+
+    if label == PromptEntity.PERSONA.value and prompt_editor_cls is not None:
+        editor_kwargs: dict[str, Any] = {"seed": row_seed + segment_index}
+        model_name = str(rendered.get("prompt_editor_model_name") or "").strip()
+        model_org = str(rendered.get("prompt_editor_model_org") or "").strip()
+        if model_name:
+            editor_kwargs["model_name"] = model_name
+        if model_org:
+            editor_kwargs["model_org"] = model_org
+        editor = prompt_editor_cls(**editor_kwargs)
+        try:
+            output = editor.compose(
+                texts=[text],
+                categories=[PromptEntity.PERSONA.value],
+                persona_compact=persona_compact,
+            )
+            if output:
+                text = str(output[0].get("text", text))
+                rendered["render_branch"] = output[0].get("branch")
+                rendered["render_variant"] = output[0].get("variant")
+        except Exception:
+            pass
+
+    rendered["text"] = text
+    return rendered
+
+
+def _render_plan_segments(
+    segments: list[dict[str, Any]],
+    *,
+    row_seed: int,
+    prompt_editor_cls: Any,
+) -> list[dict[str, Any]]:
+    persona_seen = 0
+    rendered_segments: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        compact = False
+        if segment.get("label") == PromptEntity.PERSONA.value:
+            compact = persona_seen > 0
+            persona_seen += 1
+        rendered_segments.append(
+            _render_plan_segment(
+                segment,
+                row_seed=row_seed,
+                segment_index=index,
+                prompt_editor_cls=prompt_editor_cls,
+                persona_compact=compact,
+            )
+        )
+    return rendered_segments
+
+
+def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    from text_composer import TextChanger
+    from prompt_render import PromptEditor
+
+    text_changer = TextChanger()
+    prompt_editor_cls = PromptEditor
+
+    row_seed = int(plan["row_seed"])
+    original_segments = list(plan["original_segments"])
+    rendered_segments = _render_plan_segments(
+        original_segments,
+        row_seed=row_seed,
+        prompt_editor_cls=prompt_editor_cls,
+    )
+
+    def _join_segments(segments: list[dict[str, Any]]) -> tuple[str, list[list[int]]]:
+        text_parts: list[str] = []
+        spans: list[list[int]] = []
+        cursor = 0
+        for idx, segment in enumerate(segments):
+            if idx:
+                text_parts.append(" ")
+                cursor += 1
+            start = cursor
+            piece = str(segment["text"])
+            text_parts.append(piece)
+            cursor += len(piece)
+            spans.append([start, cursor])
+        return "".join(text_parts), spans
+
+    assembled_text, spans = _join_segments(rendered_segments)
+    recipe_type = plan["recipe_type"]
+    transformed_text = assembled_text
+    mutation_applied = False
+    mutation_type = plan.get("mutation_type", "")
+    obfuscation_applied = False
+
+    if recipe_type == "mutated":
+        mutation_profile = plan.get("mutation_profile")
+        rendered = text_changer.compose(
+            assembled_text,
+            operation="mutation",
+            mutation_profile=mutation_profile,
+            seed=row_seed,
+        )
+        transformed_text = str(rendered["text"])
+        mutation_applied = True
+        mutation_type = str(rendered.get("label") or "mutation")
+        obfuscation_applied = False
+    elif recipe_type == "obfuscated":
+        obfuscation_mode = plan.get("obfuscation_mode", "encryption")
+        if obfuscation_mode == "encryption":
+            rendered = text_changer.compose(
+                assembled_text,
+                operation="encryption",
+                encryption_method=plan.get("encryption_method") or None,
+                seed=row_seed,
+            )
+        else:
+            rendered = text_changer.compose(
+                assembled_text,
+                operation="mutation",
+                mutation_profile=plan.get("mutation_profile"),
+                seed=row_seed,
+            )
+        transformed_text = str(rendered["text"])
+        mutation_applied = True
+        mutation_type = str(plan.get("obfuscation_kind") or obfuscation_mode)
+        obfuscation_applied = True
+
+    final = dict(plan["base_row"])
+    final.update(
+        {
+            "original_text": assembled_text,
+            "text": transformed_text,
+            "segments": rendered_segments,
+            "segment_count": len(rendered_segments),
+            "segment_spans_original": spans,
+            "segment_spans_merged": spans,
+            "original_segments": original_segments,
+            "transformed_segments": rendered_segments,
+            "mutation_applied": mutation_applied,
+            "mutation_type": mutation_type,
+            "obfuscation_applied": obfuscation_applied,
+            "obfuscation_method": mutation_type if recipe_type == "obfuscated" else "",
+            "encryption_method": str(plan.get("encryption_method") or ""),
+        }
+    )
+    return final
 
 
 def load_full_df2(parquet_path: str | Path = DEFAULT_PARQUET_PATH) -> pd.DataFrame:
@@ -913,6 +1086,228 @@ class DecisionTreeComposer:
             "obfuscation_applied": obfuscation_applied,
         }
 
+    def _plan_standalone_row(self, recipe_name: str, row_id: int) -> dict[str, Any]:
+        if recipe_name == "standalone_benign":
+            base = self._sample_pool_row("benign")
+        elif recipe_name == "standalone_persona":
+            base = self._pick_persona_row()
+        elif recipe_name == "standalone_format":
+            base = self._sample_pool_row("format")
+        elif recipe_name == "standalone_nshot":
+            base = self._sample_pool_row("nshot")
+        elif recipe_name == "standalone_violation":
+            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
+            base = self._sample_pool_row(jailbreak_pool)
+        else:
+            base = self._sample_salad_row(intent_only=True)
+
+        segment = self._segment_from_row(base)
+        category = segment["label"]
+        return {
+            "row_id": f"row_{row_id:06d}",
+            "row_seed": row_id,
+            "recipe_type": "standalone",
+            "assembly_type": recipe_name,
+            "category": category,
+            "target_category": category,
+            "target_intent": category if category in INTENT_CATEGORIES else "",
+            "source": segment["source"],
+            "dataset_source": segment["dataset_source"],
+            "metadata": segment["metadata"],
+            "original_segments": [segment],
+            "base_row": {
+                "row_id": f"row_{row_id:06d}",
+                "recipe_type": "standalone",
+                "assembly_type": recipe_name,
+                "category": category,
+                "target_category": category,
+                "target_intent": category if category in INTENT_CATEGORIES else "",
+                "source": segment["source"],
+                "dataset_source": segment["dataset_source"],
+                "metadata": segment["metadata"],
+                "obfuscation_method": "",
+                "encryption_method": "",
+            },
+            "mutation_profile": None,
+            "mutation_type": None,
+            "obfuscation_mode": "",
+            "obfuscation_kind": "",
+            "encryption_method": "",
+        }
+
+    def _plan_composite_row(self, recipe_name: str, row_id: int) -> dict[str, Any]:
+        segments: list[dict[str, Any]] = []
+        target_category = ""
+        target_intent = ""
+        filler_pools: list[str] = []
+
+        if recipe_name == "persona_plus_nshot_plus_intent":
+            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_salad_row(intent_only=False)))
+            nshot = self._segment_from_row(self._sample_pool_row("nshot"))
+            intent_row = self._sample_salad_row(intent_only=True)
+            intent = self._segment_from_row(intent_row)
+            segments = [persona, nshot, intent]
+            target_category = intent["label"]
+            target_intent = intent["label"]
+            filler_pools = ["salad_intent"]
+        elif recipe_name == "persona_plus_format":
+            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("cais_mmlu")))
+            fmt = self._segment_from_row(self._sample_pool_row("format"))
+            segments = [persona, fmt]
+            target_category = fmt["label"] or persona["label"]
+            filler_pools = ["format"]
+        elif recipe_name == "jailbreak_plus_intent":
+            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
+            jailbreak = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
+            intent_row = self._sample_salad_row(intent_only=True)
+            intent = self._segment_from_row(intent_row)
+            segments = [jailbreak, intent]
+            target_category = intent["label"]
+            target_intent = intent["label"]
+            filler_pools = [jailbreak_pool, "salad_intent"]
+        elif recipe_name == "benign_plus_format":
+            benign = self._segment_from_row(self._sample_pool_row("benign"))
+            fmt = self._segment_from_row(self._sample_pool_row("format"))
+            segments = [benign, fmt]
+            target_category = fmt["label"] or benign["label"]
+            filler_pools = ["format"]
+        elif recipe_name == "salad_plus_salad":
+            first = self._segment_from_row(self._sample_salad_row(intent_only=False))
+            second = self._segment_from_row(self._sample_salad_row(intent_only=False))
+            segments = [first, second]
+            target_category = first["label"]
+            target_intent = first["label"] if first["label"] in INTENT_CATEGORIES else ""
+            filler_pools = ["salad"]
+        elif recipe_name == "jailbreak_plus_jailbreak":
+            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
+            first = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
+            second = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
+            segments = [first, second]
+            target_category = first["label"]
+            filler_pools = [jailbreak_pool]
+        elif recipe_name == "persona_plus_persona":
+            first = self._segment_from_row(self._pick_persona_row())
+            second = self._segment_from_row(self._pick_persona_row())
+            segments = [first, second]
+            target_category = first["label"]
+            filler_pools = ["persona"]
+        else:
+            return self._plan_standalone_row("standalone_benign", row_id)
+
+        segments = self._append_fillers(
+            segments,
+            filler_pools=filler_pools,
+            min_chars=self.config.min_assembled_chars,
+            max_fill_segments=self.config.max_fill_segments,
+        )
+        segments = self._shuffle_composite_segments(segments)
+        category = target_category or segments[0]["label"]
+        if not category:
+            category = segments[0]["label"]
+        return {
+            "row_id": f"row_{row_id:06d}",
+            "row_seed": row_id,
+            "recipe_type": "composite",
+            "assembly_type": recipe_name,
+            "category": category,
+            "target_category": target_category or category,
+            "target_intent": target_intent,
+            "source": segments[0]["source"],
+            "dataset_source": segments[0]["dataset_source"],
+            "metadata": segments[0]["metadata"],
+            "original_segments": segments,
+            "base_row": {
+                "row_id": f"row_{row_id:06d}",
+                "recipe_type": "composite",
+                "assembly_type": recipe_name,
+                "category": category,
+                "target_category": target_category or category,
+                "target_intent": target_intent,
+                "source": segments[0]["source"],
+                "dataset_source": segments[0]["dataset_source"],
+                "metadata": segments[0]["metadata"],
+                "obfuscation_method": "",
+                "encryption_method": "",
+            },
+            "mutation_profile": None,
+            "mutation_type": None,
+            "obfuscation_mode": "",
+            "obfuscation_kind": "",
+            "encryption_method": "",
+        }
+
+    def _plan_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
+        base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
+        base_row = self._sample_salad_row(intent_only=False) if base_choice == "salad" else self._sample_pool_row(base_choice)
+        segment = self._segment_from_row(base_row)
+        original_segments = [segment]
+        category = segment["label"]
+        mutation_profile = self.text_changer.mutator.random_profile() if self.text_changer is not None and recipe_type == "mutated" else None
+        obfuscation_mode = ""
+        obfuscation_kind = ""
+        encryption_method = ""
+
+        if recipe_type == "obfuscated":
+            if self.rng.random() < 0.5:
+                obfuscation_mode = "encryption"
+                obfuscation_kind = "encryption"
+                encryption_method = self.rng.choice(list(self.text_changer.encrypter.METHODS)) if self.text_changer is not None else ""
+            else:
+                obfuscation_mode = "unicode_obfuscation"
+                obfuscation_kind = "unicode_obfuscation"
+                mutation_profile = self._next_unicode_obfuscation_profile()
+
+        return {
+            "row_id": f"row_{row_id:06d}",
+            "row_seed": row_id,
+            "recipe_type": recipe_type,
+            "assembly_type": f"{recipe_type}_standalone",
+            "category": category,
+            "target_category": category,
+            "target_intent": category if category in INTENT_CATEGORIES else "",
+            "source": segment["source"],
+            "dataset_source": segment["dataset_source"],
+            "metadata": segment["metadata"],
+            "original_segments": original_segments,
+            "base_row": {
+                "row_id": f"row_{row_id:06d}",
+                "recipe_type": recipe_type,
+                "assembly_type": f"{recipe_type}_standalone",
+                "category": category,
+                "target_category": category,
+                "target_intent": category if category in INTENT_CATEGORIES else "",
+                "source": segment["source"],
+                "dataset_source": segment["dataset_source"],
+                "metadata": segment["metadata"],
+                "obfuscation_method": obfuscation_kind if recipe_type == "obfuscated" else "",
+                "encryption_method": encryption_method,
+            },
+            "mutation_profile": mutation_profile,
+            "mutation_type": "mutation" if recipe_type == "mutated" else obfuscation_kind or "mutation",
+            "obfuscation_mode": obfuscation_mode,
+            "obfuscation_kind": obfuscation_kind,
+            "encryption_method": encryption_method,
+        }
+
+    def _build_plan_one(self, index: int, target_rows: int) -> dict[str, Any]:
+        recipe_type = self._plan_recipe_type(index, target_rows)
+        if recipe_type == "standalone":
+            return self._plan_standalone_row(self._standalone_recipe(), index)
+        if recipe_type == "composite":
+            return self._plan_composite_row(self._composite_recipe(), index)
+        return self._plan_transform_row(recipe_type, index)
+
+    def _build_parallel(self, target_rows: int, max_workers: int | None = None) -> pd.DataFrame:
+        plans = [self._build_plan_one(i, target_rows) for i in range(target_rows)]
+        iterator = tqdm(plans, total=target_rows, desc="Building decision-tree rows")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            records = list(executor.map(_materialize_decision_tree_plan, iterator))
+        planned_df = pd.DataFrame(records)
+        if not self.config.return_debug_columns:
+            keep = ["text", "category", "source", "dataset_source", "metadata"]
+            return planned_df[keep].copy()
+        return planned_df
+
     def _build_one(self, index: int, target_rows: int) -> dict[str, Any]:
         recipe_type = self._plan_recipe_type(index, target_rows)
         if recipe_type == "standalone":
@@ -921,11 +1316,13 @@ class DecisionTreeComposer:
             return self._build_composite_row(self._composite_recipe(), index)
         return self._build_transform_row(recipe_type, index)
 
-    def build(self) -> pd.DataFrame:
+    def build(self, *, parallel: bool = True, max_workers: int | None = None) -> pd.DataFrame:
         """
         Build a planned training dataframe using the recipe planner.
         """
         target_rows = self.config.target_rows or len(self.df)
+        if parallel:
+            return self._build_parallel(target_rows, max_workers=max_workers)
         iterator = tqdm(range(target_rows), total=target_rows, desc="Building decision-tree rows")
 
         records = [self._build_one(i, target_rows) for i in iterator]
@@ -940,13 +1337,15 @@ class DecisionTreeComposer:
         output_path: str | Path = "decision_tree_output.parquet",
         *,
         index: bool = False,
+        parallel: bool = True,
+        max_workers: int | None = None,
     ) -> Path:
         """
         Build the planned dataframe and save it as a parquet file.
         """
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        df = self.build()
+        df = self.build(parallel=parallel, max_workers=max_workers)
         df.to_parquet(output, index=index)
         return output
 
@@ -955,12 +1354,14 @@ class DecisionTreeComposer:
         output_path: str | Path = "decision_tree_output.parquet",
         *,
         index: bool = False,
+        parallel: bool = True,
+        max_workers: int | None = None,
     ) -> pd.DataFrame:
         """
         Convenience helper for callers that want the dataframe in memory and
         persisted to parquet at the same time.
         """
-        df = self.build()
+        df = self.build(parallel=parallel, max_workers=max_workers)
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(output, index=index)
@@ -1042,7 +1443,7 @@ def main() -> None:
     if args.summary_only:
         return
 
-    output = composer.save(args.output)
+    output = composer.build_and_save(args.output)
     print(f"\nSaved {args.rows} rows to: {output}")
 
 

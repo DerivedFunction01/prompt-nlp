@@ -10,6 +10,7 @@ from labels import PromptEntity
 
 class TextChanger:
     OBFUSCATION_LABEL = PromptEntity.OBFUSCATION.value
+    DEFAULT_MAX_FORMAT_CHARS = 160
 
     def __init__(self) -> None:
         self.formatter = TextFormatter()
@@ -59,6 +60,7 @@ class TextChanger:
         label: str | None = None,
         seed: int | None = None,
         max_chars: int = 128,
+        max_format_chars: int = DEFAULT_MAX_FORMAT_CHARS,
     ) -> dict[str, object]:
         """
         Apply mutation, optional encryption, and optional code formatting.
@@ -71,6 +73,8 @@ class TextChanger:
 
         if seed is not None:
             random.seed(seed)
+
+        can_format = len(text) <= max_format_chars
 
         # Treat an empty mutation profile as "no explicit profile" so callers
         # can still opt into the randomized branch selection path.
@@ -91,12 +95,20 @@ class TextChanger:
         }:
             raise ValueError(f"Unknown operation: {operation!r}")
 
+        if operation == "formatting" and not can_format:
+            return {
+                "text": text,
+                "span": (0, len(text)),
+                "method": None,
+                "label": label,
+            }
+
         if explicit_plan:
             if operation == "mutation" and mutation_profile is None:
                 mutation_profile = self.mutator.random_profile()
             elif operation == "encryption" and encryption_method is None:
                 encryption_method = random.choice(self.encrypter.METHODS)
-            elif operation == "formatting" and code_method is None:
+            elif operation == "formatting" and code_method is None and can_format:
                 code_method = random.choice(self.formatter.FORMATTERS)
 
             if mutation_profile is not None and encryption_method is None:
@@ -112,7 +124,7 @@ class TextChanger:
                 )
                 final_label = self.OBFUSCATION_LABEL
 
-            if code_method is not None:
+            if code_method is not None and can_format:
                 rendered = self.formatter.code_format(code_method, payload)
                 rendered["label"] = final_label
                 return rendered
@@ -148,7 +160,7 @@ class TextChanger:
             payload = self.encrypt(payload, method=None, max_chars=max_chars)
             final_label = self.OBFUSCATION_LABEL
 
-        if "formatting" in selected_ops:
+        if "formatting" in selected_ops and can_format:
             rendered = self.formatter.random_code_format(payload)
             rendered["label"] = final_label
             return rendered

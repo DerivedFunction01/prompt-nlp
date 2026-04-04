@@ -728,7 +728,8 @@ class DecisionTreeComposer:
         Build a reusable pool of Unicode-based obfuscation profiles.
 
         This stays in the text-mutator path so obfuscated rows can be either
-        encrypted or rendered through visible/invisible Unicode variants.
+        encrypted or rendered through visible Unicode variants, optionally
+        with invisible Unicode layered on top.
         """
         profiles: list[list[dict[str, Any]]] = []
         total = max(1, count)
@@ -742,31 +743,15 @@ class DecisionTreeComposer:
                 }
             ]
         )
-        if total > 1:
-            profiles.append(
-                [
-                    {
-                        "method": "invisible_unicode",
-                        "chance": 1.0,
-                        "params": {
-                            "char_prob": round(self.rng.uniform(0.2, 0.6), 2),
-                            "max_insertions": self.rng.randint(1, 4),
-                        },
-                    }
-                ]
-            )
-
         while len(profiles) < total:
-            profile: list[dict[str, Any]] = []
-            if self.rng.random() < 0.8:
-                profile.append(
-                    {
-                        "method": "unicode_variation",
-                        "chance": 1.0,
-                        "params": {"level": "broad"},
-                    }
-                )
-            if self.rng.random() < 0.75 or not profile:
+            profile: list[dict[str, Any]] = [
+                {
+                    "method": "unicode_variation",
+                    "chance": 1.0,
+                    "params": {"level": "broad"},
+                }
+            ]
+            if self.rng.random() < 0.75:
                 profile.append(
                     {
                         "method": "invisible_unicode",

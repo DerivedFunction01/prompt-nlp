@@ -40,6 +40,17 @@ INTENT_CATEGORIES = {
 JAILBREAK_MODEL_RE = re.compile(r"\bModel:\s*(.+?)(?:,|\s*$)")
 JAILBREAK_ORG_RE = re.compile(r"\bOrg:\s*(.+?)(?:,|\s*$)")
 
+_TEXT_CHANGER_CACHE: Any = None
+
+
+def _get_text_changer():
+    global _TEXT_CHANGER_CACHE
+    if _TEXT_CHANGER_CACHE is None:
+        from text_composer import TextChanger
+
+        _TEXT_CHANGER_CACHE = TextChanger()
+    return _TEXT_CHANGER_CACHE
+
 
 def _is_sequence(value: Any) -> bool:
     return isinstance(value, (list, tuple, np.ndarray))
@@ -177,19 +188,20 @@ def _render_plan_segments(
 
 
 def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    from text_composer import TextChanger
-    from prompt_render import PromptEditor
-
-    text_changer = TextChanger()
-    prompt_editor_cls = PromptEditor
-
     row_seed = int(plan["row_seed"])
     original_segments = list(plan["original_segments"])
-    rendered_segments = _render_plan_segments(
-        original_segments,
-        row_seed=row_seed,
-        prompt_editor_cls=prompt_editor_cls,
-    )
+    recipe_type = plan["recipe_type"]
+    if recipe_type == "preserved":
+        rendered_segments = list(original_segments)
+    else:
+        from prompt_render import PromptEditor
+
+        prompt_editor_cls = PromptEditor
+        rendered_segments = _render_plan_segments(
+            original_segments,
+            row_seed=row_seed,
+            prompt_editor_cls=prompt_editor_cls,
+        )
 
     def _join_segments(segments: list[dict[str, Any]]) -> tuple[str, list[list[int]]]:
         text_parts: list[str] = []
@@ -207,13 +219,13 @@ def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
         return "".join(text_parts), spans
 
     assembled_text, spans = _join_segments(rendered_segments)
-    recipe_type = plan["recipe_type"]
     transformed_text = assembled_text
     mutation_applied = False
     mutation_type = plan.get("mutation_type", "")
     obfuscation_applied = False
 
     if recipe_type == "mutated":
+        text_changer = _get_text_changer()
         mutation_profile = plan.get("mutation_profile")
         rendered = text_changer.compose(
             assembled_text,
@@ -226,6 +238,7 @@ def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
         mutation_type = str(rendered.get("label") or "mutation")
         obfuscation_applied = False
     elif recipe_type == "obfuscated":
+        text_changer = _get_text_changer()
         obfuscation_mode = plan.get("obfuscation_mode", "encryption")
         if obfuscation_mode == "encryption":
             rendered = text_changer.compose(
@@ -360,6 +373,7 @@ def summarize_full_df2(df: pd.DataFrame) -> dict[str, Any]:
 class DecisionTreeConfig:
     seed: int = 42
     target_rows: int | None = None
+    preserve_original_fraction: float = 0.15
     standalone_fraction: float = 0.20
     standalone_control_fraction: float = 0.35
     standalone_salad_fraction: float = 0.25
@@ -773,6 +787,41 @@ class DecisionTreeComposer:
         self._unicode_obfuscation_profile_index += 1
         return profile
 
+    def _sample_preserved_row(self) -> pd.Series:
+        for pool_name in ("benign", "salad", "persona", "format", "nshot", "violation"):
+            pool = self.pools.get(pool_name)
+            if pool is not None and not pool.empty:
+                return self._sample_pool_row(pool_name)
+        return self._sample_pool_row("all")
+
+    def _build_preserved_row(self, row_id: int) -> dict[str, Any]:
+        base = self._sample_preserved_row()
+        segment = self._segment_from_row(base)
+        assembled_text = segment["text"]
+        spans = [[0, len(assembled_text)]]
+        return {
+            "row_id": f"row_{row_id:06d}",
+            "recipe_type": "preserved",
+            "assembly_type": "preserved_direct",
+            "category": segment["label"],
+            "target_category": segment["label"],
+            "target_intent": segment["label"] if segment["label"] in INTENT_CATEGORIES else "",
+            "source": segment["source"],
+            "dataset_source": segment["dataset_source"],
+            "metadata": segment["metadata"],
+            "original_text": assembled_text,
+            "text": assembled_text,
+            "segments": [segment],
+            "segment_count": 1,
+            "segment_spans_original": spans,
+            "segment_spans_merged": spans,
+            "original_segments": [segment],
+            "transformed_segments": [segment],
+            "mutation_applied": False,
+            "mutation_type": None,
+            "obfuscation_applied": False,
+        }
+
     def _compose_obfuscated_text(self, text: str) -> tuple[str, bool, str | None, str, str]:
         """
         Obfuscate using either encryption or Unicode-based mutation.
@@ -864,15 +913,20 @@ class DecisionTreeComposer:
         return self._choice(["obfuscated", "mutated"])
 
     def _plan_recipe_type(self, index: int, target_rows: int) -> str:
+        preserved_count = int(target_rows * self.config.preserve_original_fraction) if self.config.preserve_original_rows else 0
         standalone_count = int(target_rows * self.config.standalone_fraction)
         obfuscation_count = int(target_rows * self.config.obfuscation_fraction)
         mutation_count = int(target_rows * self.config.mutation_fraction)
         if self.config.composite_fraction is None:
-            composite_count = max(target_rows - standalone_count - obfuscation_count - mutation_count, 0)
+            composite_count = max(
+                target_rows - preserved_count - standalone_count - obfuscation_count - mutation_count,
+                0,
+            )
         else:
             composite_count = int(target_rows * self.config.composite_fraction)
 
         thresholds = [
+            ("preserved", preserved_count),
             ("standalone", standalone_count),
             ("obfuscated", obfuscation_count),
             ("mutated", mutation_count),
@@ -884,6 +938,46 @@ class DecisionTreeComposer:
                 return recipe_type
             cursor += count
         return "composite"
+
+    def _plan_preserved_row(self, row_id: int) -> dict[str, Any]:
+        base_row = self._sample_preserved_row()
+        segment = self._segment_from_row(base_row)
+        category = segment["label"]
+        spans = [[0, len(segment["text"])]]
+        return {
+            "row_id": f"row_{row_id:06d}",
+            "row_seed": row_id,
+            "recipe_type": "preserved",
+            "assembly_type": "preserved_direct",
+            "category": category,
+            "target_category": category,
+            "target_intent": category if category in INTENT_CATEGORIES else "",
+            "source": segment["source"],
+            "dataset_source": segment["dataset_source"],
+            "metadata": segment["metadata"],
+            "original_text": segment["text"],
+            "original_segments": [segment],
+            "base_row": {
+                "row_id": f"row_{row_id:06d}",
+                "recipe_type": "preserved",
+                "assembly_type": "preserved_direct",
+                "category": category,
+                "target_category": category,
+                "target_intent": category if category in INTENT_CATEGORIES else "",
+                "source": segment["source"],
+                "dataset_source": segment["dataset_source"],
+                "metadata": segment["metadata"],
+                "obfuscation_method": "",
+                "encryption_method": "",
+            },
+            "mutation_profile": None,
+            "mutation_type": None,
+            "obfuscation_mode": "",
+            "obfuscation_kind": "",
+            "encryption_method": "",
+            "segment_spans_original": spans,
+            "segment_spans_merged": spans,
+        }
 
     def _intent_rows(self) -> pd.DataFrame:
         return self.pools["salad"][
@@ -1275,6 +1369,8 @@ class DecisionTreeComposer:
 
     def _build_plan_one(self, index: int, target_rows: int) -> dict[str, Any]:
         recipe_type = self._plan_recipe_type(index, target_rows)
+        if recipe_type == "preserved":
+            return self._plan_preserved_row(index)
         if recipe_type == "standalone":
             return self._plan_standalone_row(self._standalone_recipe(), index)
         if recipe_type == "composite":
@@ -1309,6 +1405,8 @@ class DecisionTreeComposer:
 
     def _build_one(self, index: int, target_rows: int) -> dict[str, Any]:
         recipe_type = self._plan_recipe_type(index, target_rows)
+        if recipe_type == "preserved":
+            return self._build_preserved_row(index)
         if recipe_type == "standalone":
             return self._build_standalone_row(self._standalone_recipe(), index)
         if recipe_type == "composite":

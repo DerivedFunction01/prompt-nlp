@@ -179,10 +179,39 @@ class PromptEditor:
         "You are speaking as",
     ]
 
+    PERSONA_NEGATED_PREFIX_POOL = [
+        "You are not",
+        "Do not act as",
+        "Do not assume the role of",
+        "Do not take on the role of",
+        "Do not take on the persona of",
+        "Do not respond as",
+        "Do not reply as",
+        "Do not present yourself as",
+        "Do not imagine you are",
+        "From now on, you are not",
+        "For this conversation, you are not",
+        "In this scenario, you are not",
+        "You are not acting as",
+        "You will not behave as",
+        "You are not speaking as",
+    ]
+
     
     PERSONA_MODEL_STYLE_POOL = [
         "prefix",
         "is_a",
+        "as_you_are",
+    ]
+
+    PERSONA_COMPACT_CUE_POOL = [
+        "Also",
+        "Next",
+        "Then",
+        "Additionally",
+        "Furthermore",
+        "Moreover",
+        "Plus",
     ]
 
     MODEL_IDENTITY_FORMAT_POOL = [
@@ -192,8 +221,23 @@ class PromptEditor:
     ]
 
     MODEL_VARIANT_SUFFIXES = ["mini", "small", "large", "plus", "pro", "lite", "thinking"]
+    MODEL_FICTIONAL_SUFFIXES = ["Chat", "AI", "ML", "LM", "LLM", "Bot", "GPT"]
     MODEL_VARIANT_SIZE_UNITS = ["M", "B", "T"]
     MODEL_VARIANT_ORG_CONNECTORS = ["from", "at", "by"]
+    MODEL_COMPACT_DROP_TOKENS = {
+        "mini",
+        "small",
+        "large",
+        "plus",
+        "pro",
+        "lite",
+        "thinking",
+        "preview",
+        "beta",
+        "alpha",
+        "rc",
+        "v",
+    }
 
     def __init__(
         self,
@@ -263,6 +307,31 @@ class PromptEditor:
             return None
         return self.rng.choice(parts).title()
 
+    def _faker_name_fragment(self) -> str | None:
+        if self._faker is None:
+            return None
+        raw = self._faker.first_name()
+        if not raw:
+            return None
+        return re.sub(r"[^A-Za-z]", "", raw).title() or None
+
+    def _fictional_model_stem(self) -> str | None:
+        candidates = [
+            self._faker_name_fragment(),
+            self._randomname_fragment(),
+        ]
+        candidates = [candidate for candidate in candidates if candidate]
+        if candidates:
+            return self.rng.choice(candidates)
+        return None
+
+    def _fictional_model_name(self) -> str:
+        stem = self._fictional_model_stem()
+        if not stem:
+            stem = self._dummy_model_name()
+        suffix = self.rng.choice(self.MODEL_FICTIONAL_SUFFIXES)
+        return f"{stem}{suffix}"
+
     def _generate_version_tag(self) -> str:
         """
         Build a compact version tag such as v3, 5.2, -4q, or -5.1.
@@ -307,7 +376,7 @@ class PromptEditor:
         if mode == "suffix":
             return f"{base_name}{separator}{self.rng.choice(self.MODEL_VARIANT_SUFFIXES)}"
 
-        word = self._randomname_fragment()
+        word = self._fictional_model_stem()
         if word:
             return f"{base_name}{separator}{word}"
         return f"{base_name}{separator}{self.rng.choice(self.MODEL_VARIANT_SUFFIXES)}"
@@ -339,6 +408,83 @@ class PromptEditor:
     @staticmethod
     def _strip_leading_article(text: str) -> str:
         return re.sub(r"^(?:a|an)\s+", "", text, flags=re.IGNORECASE).strip()
+
+    @staticmethod
+    def _capitalize_leading_article(text: str) -> str:
+        if not text:
+            return text
+        return re.sub(
+            r"^(a|an)\b",
+            lambda m: m.group(1).capitalize(),
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _split_leading_article(text: str) -> tuple[str, str]:
+        cleaned = text.strip()
+        match = re.match(r"^(a|an)\b\s*(.*)$", cleaned, flags=re.IGNORECASE)
+        if not match:
+            return "", cleaned
+        return match.group(1).lower(), match.group(2).strip()
+
+    @classmethod
+    def _compact_model_name(cls, model_name: str | None) -> str:
+        if not model_name:
+            return ""
+
+        name = re.sub(r"[\s\-_]+", " ", str(model_name).strip())
+        parts = [part for part in name.split() if part]
+        if not parts:
+            return ""
+
+        kept: list[str] = []
+        for part in parts:
+            lower = part.casefold().strip(".")
+            if re.fullmatch(r"(?:v)?\d+(?:\.\d+)*", lower):
+                break
+            if lower in cls.MODEL_COMPACT_DROP_TOKENS:
+                break
+            if re.fullmatch(r"\d+[a-z]?", lower):
+                break
+            kept.append(part)
+
+        if not kept:
+            kept = [parts[0]]
+        return " ".join(kept).strip()
+
+    @staticmethod
+    def _guess_indefinite_article(text: str) -> str:
+        cleaned = text.strip()
+        if not cleaned:
+            return "a"
+        return "an" if re.match(r"^[aeiou]", cleaned, flags=re.IGNORECASE) else "a"
+
+    def _format_persona_clause(
+        self,
+        text: str,
+        *,
+        compact: bool = False,
+        negated: bool = False,
+        drop_model_version: bool = False,
+    ) -> str:
+        if compact:
+            cue = self.rng.choice(self.PERSONA_COMPACT_CUE_POOL)
+            article, persona_text = self._split_leading_article(text)
+            if not persona_text:
+                persona_text = text.strip()
+            if self.model_name:
+                identity, _ = self._format_model_identity()
+                if drop_model_version:
+                    identity = self._compact_model_name(identity)
+                article_out = article or self._guess_indefinite_article(persona_text)
+                copula = "is not" if negated else "is"
+                return f"{cue}, {identity} {copula} {article_out} {persona_text}"
+            article_out = article or self._guess_indefinite_article(persona_text)
+            copula = "are not" if negated else "are"
+            return f"{cue}, you {copula} {article_out} {persona_text}"
+
+        return self._capitalize_leading_article(text.strip())
 
     def _format_model_identity(
         self,
@@ -426,21 +572,71 @@ class PromptEditor:
         )
         return transformed, f"{human_role}->{assistant_role} ({human_style}/{assistant_style})"
 
-    def _persona_prefix(self) -> str:
-        return self.rng.choice(self.PERSONA_PREFIX_POOL)
+    def _persona_prefix(self, *, negated: bool = False) -> str:
+        pool = self.PERSONA_NEGATED_PREFIX_POOL if negated else self.PERSONA_PREFIX_POOL
+        return self.rng.choice(pool)
 
-    def _compose_persona(self, text: str) -> str:
-        prefix = self._persona_prefix()
+    def _compose_persona(
+        self,
+        text: str,
+        *,
+        compact: bool = False,
+        negated: bool = False,
+        drop_model_version: bool = False,
+    ) -> str:
+        if compact:
+            return self._format_persona_clause(
+                text,
+                compact=True,
+                negated=negated,
+                drop_model_version=drop_model_version,
+            )
+
+        prefix = self._persona_prefix(negated=negated)
 
         if self.model_name:
+            if negated:
+                identity, _ = self._format_model_identity()
+                if drop_model_version:
+                    identity = self._compact_model_name(identity)
+                article, persona_text = self._split_leading_article(text)
+                if not persona_text:
+                    persona_text = text.strip()
+                article_out = article or self._guess_indefinite_article(persona_text)
+                if self.rng.random() < 0.5:
+                    return f"{identity} is not {article_out} {persona_text}"
+                return f"As {identity}, you are not {article_out} {persona_text}"
+
             style = self.rng.choice(self.PERSONA_MODEL_STYLE_POOL)
             identity, _ = self._format_model_identity()
+            if drop_model_version:
+                identity = self._compact_model_name(identity)
             if style == "is_a":
-                persona_text = self._strip_leading_article(text)
-                return f"{identity} is a {persona_text}"
-            return f"{prefix} {identity}, {text}"
+                article, persona_text = self._split_leading_article(text)
+                if not persona_text:
+                    persona_text = text.strip()
+                article_out = article or self._guess_indefinite_article(persona_text)
+                if negated:
+                    return f"{identity} is not {article_out} {persona_text}"
+                return f"{identity} is {article_out} {persona_text}"
+            if style == "as_you_are":
+                article, persona_text = self._split_leading_article(text)
+                if not persona_text:
+                    persona_text = text.strip()
+                article_out = article or self._guess_indefinite_article(persona_text)
+                copula = "are not" if negated else "are"
+                return f"As {identity}, you {copula} {article_out} {persona_text}"
+            copula = "are not" if negated else "are"
+            return f"{prefix} {identity}, {self._capitalize_leading_article(text.strip())}"
 
-        return f"{prefix} {text}"
+        if negated:
+            article, persona_text = self._split_leading_article(text)
+            if not persona_text:
+                persona_text = text.strip()
+            article_out = article or self._guess_indefinite_article(persona_text)
+            return f"{prefix} {article_out} {persona_text}"
+
+        return f"{prefix} {self._capitalize_leading_article(text.strip())}"
 
     def _resolve_empty_model_identity(self) -> None:
         if self.model_name:
@@ -481,7 +677,7 @@ class PromptEditor:
             and self._faker is not None
             and self.rng.random() < self.faker_name_chance
         ):
-            self.model_name = self._fake_persona_name()
+            self.model_name = self._fictional_model_name()
             if self.use_random_model_org_for_empty_model_name and (
                 self.rng.random() < self.random_model_org_chance
             ):
@@ -514,6 +710,9 @@ class PromptEditor:
         categories: Sequence[PromptEntity | str] | None = None,
         model_name: str | None = None,
         model_org: str | None = None,
+        persona_compact: bool = False,
+        persona_negated: bool = False,
+        persona_compact_drop_model_version: bool = False,
     ) -> list[dict[str, object]]:
         """
         Transform each text according to its category.
@@ -547,7 +746,12 @@ class PromptEditor:
                 transformed, variant = self._compose_nshot(text)
                 branch = "nshot"
             elif normalized == PromptEntity.PERSONA.value:
-                transformed = self._compose_persona(text)
+                transformed = self._compose_persona(
+                    text,
+                    compact=persona_compact,
+                    negated=persona_negated,
+                    drop_model_version=persona_compact_drop_model_version,
+                )
                 variant = "persona_prefix"
                 branch = "persona"
             else:

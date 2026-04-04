@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 import argparse
+import re
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,9 @@ INTENT_CATEGORIES = {
     PromptEntity.SENSITIVE.value,
     PromptEntity.DISINFO.value,
 }
+
+JAILBREAK_MODEL_RE = re.compile(r"\bModel:\s*(.+?)(?:,|\s*$)")
+JAILBREAK_ORG_RE = re.compile(r"\bOrg:\s*(.+?)(?:,|\s*$)")
 
 
 def _is_sequence(value: Any) -> bool:
@@ -292,7 +296,7 @@ class DecisionTreeComposer:
         else:
             context = dict(context_row)
 
-        picked = picker(persona_pool, context, rng=self.rng)
+        picked = picker(persona_pool, context, rng=self.rng) # type: ignore
         if not picked:
             return self._sample_pool_row("persona")
         return pd.Series(picked)
@@ -308,23 +312,78 @@ class DecisionTreeComposer:
         return tokens[0] if tokens else ""
 
     def _segment_from_row(self, row: pd.Series, label: str | None = None) -> dict[str, Any]:
+        metadata = self._cell_first(row["metadata"])
+        prompt_editor_identity = self._parse_jailbreak_identity(row)
         return {
             "text": self._cell_text(row["text"]),
             "label": label or self._cell_first(row["category"]),
             "source": self._cell_first(row["source"]),
             "dataset_source": self._cell_first(row["dataset_source"]),
-            "metadata": self._cell_first(row["metadata"]),
+            "metadata": metadata,
+            **prompt_editor_identity,
         }
 
-    def _render_segment(self, segment: dict[str, Any], *, row_seed: int, segment_index: int) -> dict[str, Any]:
+    @staticmethod
+    def _parse_jailbreak_identity(row: pd.Series) -> dict[str, str]:
+        dataset_source = _first_text(row.get("dataset_source", ""))
+        source = _first_text(row.get("source", ""))
+        metadata = _first_text(row.get("metadata", ""))
+
+        if dataset_source != "jackhhao_jailbreak" and source != "augmented":
+            return {"prompt_editor_model_name": "", "prompt_editor_model_org": ""}
+
+        model_match = JAILBREAK_MODEL_RE.search(metadata)
+        org_match = JAILBREAK_ORG_RE.search(metadata)
+        return {
+            "prompt_editor_model_name": (model_match.group(1).strip() if model_match else ""),
+            "prompt_editor_model_org": (org_match.group(1).strip() if org_match else ""),
+        }
+
+    def _render_segment(
+        self,
+        segment: dict[str, Any],
+        *,
+        row_seed: int,
+        segment_index: int,
+        persona_compact: bool = False,
+    ) -> dict[str, Any]:
         rendered = dict(segment)
         label = rendered.get("label", "")
         text = str(rendered.get("text", ""))
 
         if label == PromptEntity.NSHOT.value and self.prompt_editor_cls is not None:
-            editor = self.prompt_editor_cls(seed=row_seed + segment_index)
+            editor_kwargs: dict[str, Any] = {"seed": row_seed + segment_index}
+            model_name = str(rendered.get("prompt_editor_model_name") or "").strip()
+            model_org = str(rendered.get("prompt_editor_model_org") or "").strip()
+            if model_name:
+                editor_kwargs["model_name"] = model_name
+            if model_org:
+                editor_kwargs["model_org"] = model_org
+            editor = self.prompt_editor_cls(**editor_kwargs)
             try:
                 output = editor.compose(texts=[text], categories=[PromptEntity.NSHOT.value])
+                if output:
+                    text = str(output[0].get("text", text))
+                    rendered["render_branch"] = output[0].get("branch")
+                    rendered["render_variant"] = output[0].get("variant")
+            except Exception:
+                pass
+
+        if label == PromptEntity.PERSONA.value and self.prompt_editor_cls is not None:
+            editor_kwargs: dict[str, Any] = {"seed": row_seed + segment_index}
+            model_name = str(rendered.get("prompt_editor_model_name") or "").strip()
+            model_org = str(rendered.get("prompt_editor_model_org") or "").strip()
+            if model_name:
+                editor_kwargs["model_name"] = model_name
+            if model_org:
+                editor_kwargs["model_org"] = model_org
+            editor = self.prompt_editor_cls(**editor_kwargs)
+            try:
+                output = editor.compose(
+                    texts=[text],
+                    categories=[PromptEntity.PERSONA.value],
+                    persona_compact=persona_compact,
+                )
                 if output:
                     text = str(output[0].get("text", text))
                     rendered["render_branch"] = output[0].get("branch")
@@ -336,10 +395,22 @@ class DecisionTreeComposer:
         return rendered
 
     def _render_segments(self, segments: list[dict[str, Any]], *, row_seed: int) -> list[dict[str, Any]]:
-        return [
-            self._render_segment(segment, row_seed=row_seed, segment_index=index)
-            for index, segment in enumerate(segments)
-        ]
+        persona_seen = 0
+        rendered_segments: list[dict[str, Any]] = []
+        for index, segment in enumerate(segments):
+            compact = False
+            if segment.get("label") == PromptEntity.PERSONA.value:
+                compact = persona_seen > 0
+                persona_seen += 1
+            rendered_segments.append(
+                self._render_segment(
+                    segment,
+                    row_seed=row_seed,
+                    segment_index=index,
+                    persona_compact=compact,
+                )
+            )
+        return rendered_segments
 
     def _shuffle_composite_segments(self, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not self.config.shuffle_composite_segments or len(segments) < 2:

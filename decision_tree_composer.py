@@ -7,7 +7,7 @@ from typing import Any
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 import re
-
+import multiprocessing as mp
 import numpy as np
 import pandas as pd
 import random
@@ -265,7 +265,6 @@ def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return final
-
 
 def load_full_df2(parquet_path: str | Path = DEFAULT_PARQUET_PATH) -> pd.DataFrame:
     """
@@ -1297,11 +1296,26 @@ class DecisionTreeComposer:
             return self._plan_composite_row(self._composite_recipe(), index)
         return self._plan_transform_row(recipe_type, index)
 
-    def _build_parallel(self, target_rows: int, max_workers: int | None = None) -> pd.DataFrame:
-        plans = [self._build_plan_one(i, target_rows) for i in range(target_rows)]
-        iterator = tqdm(plans, total=target_rows, desc="Building decision-tree rows")
+    def _build_parallel(
+        self,
+        target_rows: int,
+        max_workers: int | None = None,
+        chunk_size: int = 64,
+    ) -> pd.DataFrame:
+        safe_chunk_size = max(1, chunk_size)
+        records: list[dict[str, Any]] = []
+        if not max_workers:
+            max_workers = mp.cpu_count()
+            print(f"Using {max_workers} workers for parallel processing.")
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            records = list(executor.map(_materialize_decision_tree_plan, iterator))
+            with tqdm(total=target_rows, desc="Building decision-tree rows") as progress:
+                for start in range(0, target_rows, safe_chunk_size):
+                    chunk: list[dict[str, Any]] = [
+                        self._build_plan_one(i, target_rows)
+                        for i in range(start, min(start + safe_chunk_size, target_rows))
+                    ]
+                    records.extend(executor.map(_materialize_decision_tree_plan, chunk))
+                    progress.update(len(chunk))
         planned_df = pd.DataFrame(records)
         if not self.config.return_debug_columns:
             keep = ["text", "category", "source", "dataset_source", "metadata"]
@@ -1316,13 +1330,19 @@ class DecisionTreeComposer:
             return self._build_composite_row(self._composite_recipe(), index)
         return self._build_transform_row(recipe_type, index)
 
-    def build(self, *, parallel: bool = True, max_workers: int | None = None) -> pd.DataFrame:
+    def build(
+        self,
+        *,
+        parallel: bool = True,
+        max_workers: int | None = None,
+        chunk_size: int = 64,
+    ) -> pd.DataFrame:
         """
         Build a planned training dataframe using the recipe planner.
         """
         target_rows = self.config.target_rows or len(self.df)
         if parallel:
-            return self._build_parallel(target_rows, max_workers=max_workers)
+            return self._build_parallel(target_rows, max_workers=max_workers, chunk_size=chunk_size)
         iterator = tqdm(range(target_rows), total=target_rows, desc="Building decision-tree rows")
 
         records = [self._build_one(i, target_rows) for i in iterator]
@@ -1339,13 +1359,14 @@ class DecisionTreeComposer:
         index: bool = False,
         parallel: bool = True,
         max_workers: int | None = None,
+        chunk_size: int = 64,
     ) -> Path:
         """
         Build the planned dataframe and save it as a parquet file.
         """
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        df = self.build(parallel=parallel, max_workers=max_workers)
+        df = self.build(parallel=parallel, max_workers=max_workers, chunk_size=chunk_size)
         df.to_parquet(output, index=index)
         return output
 
@@ -1356,12 +1377,13 @@ class DecisionTreeComposer:
         index: bool = False,
         parallel: bool = True,
         max_workers: int | None = None,
+        chunk_size: int = 64,
     ) -> pd.DataFrame:
         """
         Convenience helper for callers that want the dataframe in memory and
         persisted to parquet at the same time.
         """
-        df = self.build(parallel=parallel, max_workers=max_workers)
+        df = self.build(parallel=parallel, max_workers=max_workers, chunk_size=chunk_size)
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(output, index=index)

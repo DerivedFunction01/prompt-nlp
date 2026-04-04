@@ -530,7 +530,6 @@ class DecisionTreeComposer:
 
         operation_map = {
             "mutated": ("mutation", True),
-            "obfuscated": ("encryption", True),
             "formatting": ("formatting", False),
         }
 
@@ -549,6 +548,72 @@ class DecisionTreeComposer:
             applied,
             label,
         )
+
+    def _unicode_obfuscation_profile(self) -> list[dict[str, Any]]:
+        """
+        Build a small Unicode-based obfuscation profile.
+
+        This stays in the text-mutator path so obfuscated rows can be either
+        encrypted or rendered through visible/invisible Unicode variants.
+        """
+        profile: list[dict[str, Any]] = []
+
+        if self.rng.random() < 0.8:
+            profile.append(
+                {
+                    "method": "unicode_variation",
+                    "chance": 1.0,
+                    "params": {"level": "broad"},
+                }
+            )
+
+        if self.rng.random() < 0.75 or not profile:
+            profile.append(
+                {
+                    "method": "invisible_unicode",
+                    "chance": 1.0,
+                    "params": {
+                        "char_prob": round(self.rng.uniform(0.2, 0.6), 2),
+                        "max_insertions": self.rng.randint(1, 4),
+                    },
+                }
+            )
+
+        return profile
+
+    def _compose_obfuscated_text(self, text: str) -> tuple[str, bool, str | None, str, str]:
+        """
+        Obfuscate using either encryption or Unicode-based mutation.
+        """
+        if self.text_changer is None:
+            return text, False, None, "obfuscation", ""
+
+        if self.rng.random() < 0.5:
+            encryption_method = self.rng.choice(list(self.text_changer.encrypter.METHODS))
+            rendered = self.text_changer.compose(
+                text,
+                operation="encryption",
+                encryption_method=encryption_method,
+                seed=self.config.seed,
+            )  # type: ignore[arg-type]
+            _text = rendered["text"]
+            label = rendered["label"]
+            assert label is None or isinstance(label, str)
+            assert isinstance(_text, str)
+            return _text, True, label, "encryption", encryption_method
+
+        mutation_profile = self._unicode_obfuscation_profile()
+        rendered = self.text_changer.compose(
+            text,
+            operation="mutation",
+            mutation_profile=mutation_profile,
+            seed=self.config.seed,
+        )  # type: ignore[arg-type]
+        _text = rendered["text"]
+        label = rendered["label"]
+        assert label is None or isinstance(label, str)
+        assert isinstance(_text, str)
+        return _text, True, label, "unicode_obfuscation", ""
 
     def _standalone_recipe(self) -> str:
         control = max(0.0, self.config.standalone_control_fraction)
@@ -775,10 +840,15 @@ class DecisionTreeComposer:
         segment = self._segment_from_row(base_row)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
         assembled_text, spans = self._join_segments(rendered_segments)
-        transformed_text, mutation_applied, transform_label = self._compose_text(assembled_text, recipe_type)
+        if recipe_type == "obfuscated":
+            transformed_text, mutation_applied, transform_label, obfuscation_kind, encryption_method = self._compose_obfuscated_text(assembled_text)
+        else:
+            transformed_text, mutation_applied, transform_label = self._compose_text(assembled_text, recipe_type)
+            obfuscation_kind = ""
+            encryption_method = ""
         final_category = segment["label"]
         if recipe_type == "obfuscated":
-            mutation_type = transform_label or "encryption"
+            mutation_type = obfuscation_kind
             obfuscation_applied = True
         else:
             mutation_type = "mutation"
@@ -795,6 +865,8 @@ class DecisionTreeComposer:
             "metadata": segment["metadata"],
             "original_text": assembled_text,
             "text": transformed_text,
+            "obfuscation_method": mutation_type if recipe_type == "obfuscated" else "",
+            "encryption_method": encryption_method,
             "segments": rendered_segments,
             "segment_count": 1,
             "segment_spans_original": spans,

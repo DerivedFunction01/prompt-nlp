@@ -40,7 +40,10 @@ class TextChanger:
         if not profile:
             return False
         for step in profile:
-            if step.get("method") != "unicode_variation":
+            method = step.get("method")
+            if method == "invisible_unicode":
+                return True
+            if method != "unicode_variation":
                 continue
             level = step.get("params", {}).get("level", "simple")
             if level in {"accent", "broad"}:

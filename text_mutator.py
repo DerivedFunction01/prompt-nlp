@@ -1,6 +1,7 @@
 import logging
 import random
 import string
+import re
 from functools import lru_cache
 
 log = logging.getLogger(__name__)
@@ -362,6 +363,51 @@ def _apply_unicode_variation(text: str, level: str = "simple") -> str:
     return "".join(chars) if changed else text
 
 
+_INVISIBLE_UNICODE_POOL = ["\u200b", "\u200c", "\u200d", "\u2060"]
+
+
+def _apply_invisible_unicode(
+    text: str,
+    char_prob: float = 0.3,
+    max_insertions: int | None = None,
+) -> str:
+    """
+    Insert invisible Unicode characters at token boundaries.
+
+    This is intentionally a text-level pass so the injected characters land
+    between visible spans instead of inside tokens.
+    """
+    if not text:
+        return text
+
+    parts = re.split(r"(\s+)", text)
+    if len(parts) == 1:
+        return text
+
+    boundary_slots = [i for i in range(0, len(parts) - 1, 2)]
+    if not boundary_slots:
+        return text
+
+    if max_insertions is None:
+        max_insertions = len(boundary_slots)
+    max_insertions = max(0, min(max_insertions, len(boundary_slots)))
+    if max_insertions == 0:
+        return text
+
+    chosen_slots = {
+        idx for idx in boundary_slots if random.random() < char_prob
+    }
+    if len(chosen_slots) > max_insertions:
+        chosen_slots = set(random.sample(sorted(chosen_slots), k=max_insertions))
+
+    out: list[str] = []
+    for i, part in enumerate(parts):
+        out.append(part)
+        if i in chosen_slots:
+            out.append(random.choice(_INVISIBLE_UNICODE_POOL))
+    return "".join(out)
+
+
 def _apply_keyboard(
     token: str,
     char_prob: float,
@@ -612,6 +658,7 @@ class MutationOrchestrator:
         "keyboard"            params: {token_prob: float, char_prob: float, max_char_mutation_ratio: float}
         "spelling"            params: {token_prob: float}
         "unicode_variation"   params: {level: "accent" | "simple" | "broad"}
+        "invisible_unicode"   params: {char_prob: float, max_insertions: int}
 
     Registered mutations are referenced by their name as 'method' in a
     profile step, identical to built-ins. Use register() to add them.
@@ -781,6 +828,7 @@ class MutationOrchestrator:
             "keyboard",
             "spelling",
             "unicode_variation",
+            "invisible_unicode",
         ]
         registry_names = list(self._registry)
         randomizable_registry_names = [
@@ -899,6 +947,15 @@ class MutationOrchestrator:
                     "chance": 1.0,
                     "params": {"level": random.choice(["simple", "accent", "broad"])},
                 }
+            if method == "invisible_unicode":
+                return {
+                    "method": method,
+                    "chance": 1.0,
+                    "params": {
+                        "char_prob": round(random.uniform(0.15, 0.6), 2),
+                        "max_insertions": random.randint(1, 4),
+                    },
+                }
             return {"method": method, "chance": 1.0}
 
         return [_profile_for(method) for method in methods]
@@ -996,7 +1053,7 @@ class MutationOrchestrator:
         _TEXT_CUSTOM = {
             name for name, reg in self._registry.items() if reg.kind == "text"
         }
-        _TEXT_FINAL = {"unicode_variation"}
+        _TEXT_FINAL = {"unicode_variation", "invisible_unicode"}
 
         # Per-mutator config harvested from active profile steps
         _cfg: dict[str, dict] = {}  # method -> {p, min_m, chance_passed}
@@ -1306,6 +1363,18 @@ class MutationOrchestrator:
                 continue
             level = step.get("params", {}).get("level", "simple")
             result = _apply_unicode_variation(result, level=level)
+
+        for step in profile:
+            if step["method"] != "invisible_unicode":
+                continue
+            if random.random() >= step.get("chance", 1.0):
+                continue
+            p = step.get("params", {})
+            result = _apply_invisible_unicode(
+                result,
+                char_prob=p.get("char_prob", 0.3),
+                max_insertions=p.get("max_insertions"),
+            )
 
         return result
 

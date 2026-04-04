@@ -1073,7 +1073,6 @@ class TextFormatter:
         "❗",
         "🔔",
     )
-
     @classmethod
     def _pick_role_style(cls) -> tuple[str, str]:
         return random.choice(cls.ROLE_TAG_STYLES)
@@ -1141,6 +1140,25 @@ class TextFormatter:
             return text
         emojis = " ".join(cls._pick_role_emoji() for _ in range(max(1, count)))
         return f"{text} {emojis}"
+
+    @staticmethod
+    def _role_context(role: str, suffix: str) -> str:
+        """
+        Build a context phrase from the sampled role and suffix.
+
+        The phrase stays aligned with the same role word pool instead of using
+        a separate hardcoded list.
+        """
+        role = role.strip()
+        suffix = suffix.strip()
+        variants = [
+            f"{role} {suffix}",
+            f"{suffix} {role}",
+            f"{role}_{suffix}",
+            f"{role}::{suffix}",
+            f"{role} / {suffix}",
+        ]
+        return random.choice([variant for variant in variants if variant.strip()])
 
     @staticmethod
     def _role_token(name: str, style: tuple[str, str]) -> str:
@@ -1231,6 +1249,7 @@ class TextFormatter:
         instruction_text = self._apply_case("instruction", case_style)
         mode_text = self._apply_case("mode", case_style)
         header_text = self._apply_case("header", case_style)
+        context_text = self._apply_case(self._role_context(role_text, suffix_text), case_style)
         emoji_style = random.choice([True, False])
         style = self._pick_role_style()
         variants = [
@@ -1267,7 +1286,7 @@ class TextFormatter:
                 [
                     self._banner_block(
                         self._join_unique_parts(title_text, role_text, header_text).replace(" ", "_"),
-                        "Administrative context begins here.",
+                        context_text,
                         variant="dashed",
                         case_style=case_style,
                     ),

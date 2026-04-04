@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from itertools import combinations_with_replacement
 from pathlib import Path
 from typing import Any
 import argparse
@@ -40,48 +41,52 @@ INTENT_CATEGORIES = {
 JAILBREAK_MODEL_RE = re.compile(r"\bModel:\s*(.+?)(?:,|\s*$)")
 JAILBREAK_ORG_RE = re.compile(r"\bOrg:\s*(.+?)(?:,|\s*$)")
 
-COMPOSITE_RECIPE_SPECS: dict[str, dict[str, Any]] = {
-    "persona_plus_nshot_plus_intent": {
-        "parts": ["persona", "nshot", "intent"],
-        "target": "last",
-        "filler_kinds": ["salad_intent"],
-    },
-    "persona_plus_format": {
-        "parts": ["persona", "format"],
-        "target": "last",
-        "filler_kinds": ["format"],
-    },
-    "jailbreak_plus_intent": {
-        "parts": ["jailbreak", "intent"],
-        "target": "last",
-        "filler_kinds": ["jailbreak", "salad_intent"],
-    },
-    "benign_plus_format": {
-        "parts": ["benign", "format"],
-        "target": "last",
-        "filler_kinds": ["format"],
-    },
-    "benign_plus_adverse": {
-        "parts": ["benign", "adverse"],
-        "target": "last",
-        "filler_kinds": ["adverse"],
-    },
-    "salad_plus_salad": {
-        "parts": ["salad", "salad"],
-        "target": "first",
-        "filler_kinds": ["salad"],
-    },
-    "jailbreak_plus_jailbreak": {
-        "parts": ["jailbreak", "jailbreak"],
-        "target": "first",
-        "filler_kinds": ["jailbreak"],
-    },
-    "persona_plus_persona": {
-        "parts": ["persona", "persona"],
-        "target": "first",
-        "filler_kinds": ["persona"],
-    },
-}
+COMPOSITE_RECIPE_SPECS: dict[str, dict[str, Any]] = {}
+_COMPOSITE_RECIPE_ORDER: tuple[str, ...] = (
+    "persona",
+    "jailbreak",
+    "benign",
+    "salad",
+    "nshot",
+    "format",
+    "intent",
+)
+_COMPOSITE_RECIPE_ANCHORS: tuple[str, ...] = (
+    "persona",
+    "jailbreak",
+    "benign",
+    "salad",
+)
+_COMPOSITE_RECIPE_MIN_PARTS = 2
+_COMPOSITE_RECIPE_MAX_PARTS = 3
+
+
+def _build_composite_recipe_specs() -> dict[str, dict[str, Any]]:
+    """
+    Build composite recipes from a compact set of role-like kinds.
+
+    This intentionally generates combinations instead of hand-listing every
+    benign+*, salad+*, and persona+* recipe. The available pools later filter
+    the registry down to the concrete recipes that can actually be sampled.
+    """
+    specs: dict[str, dict[str, Any]] = {}
+    anchor_set = set(_COMPOSITE_RECIPE_ANCHORS)
+    for size in range(_COMPOSITE_RECIPE_MIN_PARTS, _COMPOSITE_RECIPE_MAX_PARTS + 1):
+        for parts in combinations_with_replacement(_COMPOSITE_RECIPE_ORDER, size):
+            if not any(kind in anchor_set for kind in parts):
+                continue
+            if parts.count("nshot") > 1:
+                continue
+            recipe_name = "_plus_".join(parts)
+            specs[recipe_name] = {
+                "parts": list(parts),
+                "target": "last",
+                "filler_kinds": list(dict.fromkeys(parts)),
+            }
+    return specs
+
+
+COMPOSITE_RECIPE_SPECS.update(_build_composite_recipe_specs())
 
 _TEXT_CHANGER_CACHE: Any = None
 
@@ -360,8 +365,6 @@ def split_source_pools(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     Split the normalized dataframe into the source pools used by the tree.
     """
     jailbreak_mask = df["dataset_source"].map(lambda v: _cell_matches(v, "jackhhao_jailbreak"))
-    jailbreak_clean_mask = jailbreak_mask & df["metadata"].map(_is_blank_cell)
-    jailbreak_augmented_mask = jailbreak_mask & ~jailbreak_clean_mask
 
     pools = {
         "all": df,
@@ -370,8 +373,7 @@ def split_source_pools(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "format": df[df["category"].map(lambda v: _cell_matches(v, PromptEntity.FORMAT.value))],
         "nshot": df[df["category"].map(lambda v: _cell_matches(v, PromptEntity.NSHOT.value))],
         "violation": df[df["category"].map(lambda v: _cell_matches(v, PromptEntity.VIOLATION.value))],
-        "jailbreak_clean": df[jailbreak_clean_mask],
-        "jailbreak_augmented": df[jailbreak_augmented_mask],
+        "jailbreak": df[jailbreak_mask],
         "salad": df[
             df["dataset_source"].map(
                 lambda v: _cell_matches(v, "salad_data")
@@ -470,6 +472,7 @@ class DecisionTreeComposer:
         )
         self._unicode_obfuscation_profiles = self._build_unicode_obfuscation_profiles()
         self._unicode_obfuscation_profile_index = 0
+        self._composite_recipe_cycle: deque[str] = deque()
 
     @staticmethod
     def _load_text_changer():
@@ -849,7 +852,7 @@ class DecisionTreeComposer:
             return self._pool_has("salad")
         if kind == "intent":
             return not self._intent_rows().empty
-        if kind in {"jailbreak", "adverse"}:
+        if kind == "jailbreak":
             return self._pool_has(self._adverse_pool_name())
         if kind == "salad_intent":
             return self._pool_has("salad") and not self._intent_rows().empty
@@ -876,7 +879,7 @@ class DecisionTreeComposer:
             row = self._sample_salad_row(intent_only=False)
         elif kind in {"intent", "salad_intent"}:
             row = self._sample_salad_row(intent_only=True)
-        elif kind in {"jailbreak", "adverse"}:
+        elif kind == "jailbreak":
             row = self._sample_pool_row(self._adverse_pool_name())
         else:
             raise ValueError(f"Unknown composite source kind: {kind!r}")
@@ -895,7 +898,7 @@ class DecisionTreeComposer:
             return self._sample_salad_row(intent_only=False)
         if kind in {"intent", "salad_intent"}:
             return self._sample_salad_row(intent_only=True)
-        if kind in {"jailbreak", "adverse"}:
+        if kind == "jailbreak":
             return self._sample_pool_row(self._adverse_pool_name())
         raise ValueError(f"Unknown composite source kind: {kind!r}")
 
@@ -1045,14 +1048,19 @@ class DecisionTreeComposer:
             return self._choice(fallback)
         return self._choice([name for name, size in pool_weights if size > 0])
 
-    def _composite_recipe(self) -> str | None:
-        choices = self._available_composite_recipe_names()
-        if choices:
-            return self._choice(choices)
-        return None
+    def _next_composite_recipe(self) -> str | None:
+        if not self._composite_recipe_cycle:
+            choices = self._available_composite_recipe_names()
+            if not choices:
+                return None
+            self.rng.shuffle(choices)
+            self._composite_recipe_cycle = deque(choices)
+        if not self._composite_recipe_cycle:
+            return None
+        return self._composite_recipe_cycle.popleft()
 
     def _adverse_pool_name(self) -> str:
-        return "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
+        return "jailbreak" if len(self.pools.get("jailbreak", [])) else "violation"
 
     def _transform_recipe(self) -> str:
         return self._choice(["obfuscated", "mutated"])
@@ -1139,7 +1147,7 @@ class DecisionTreeComposer:
         elif recipe_name == "standalone_nshot":
             base = self._sample_pool_row("nshot")
         elif recipe_name == "standalone_violation":
-            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
+            jailbreak_pool = "jailbreak" if len(self.pools.get("jailbreak", [])) else "violation"
             base = self._sample_pool_row(jailbreak_pool)
         else:
             base = self._sample_salad_row(intent_only=True)
@@ -1257,7 +1265,7 @@ class DecisionTreeComposer:
         elif recipe_name == "standalone_nshot":
             base = self._sample_pool_row("nshot")
         elif recipe_name == "standalone_violation":
-            jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
+            jailbreak_pool = "jailbreak" if len(self.pools.get("jailbreak", [])) else "violation"
             base = self._sample_pool_row(jailbreak_pool)
         else:
             base = self._sample_salad_row(intent_only=True)
@@ -1395,7 +1403,7 @@ class DecisionTreeComposer:
         if recipe_type == "standalone":
             return self._plan_standalone_row(self._standalone_recipe(), index)
         if recipe_type == "composite":
-            recipe_name = self._composite_recipe()
+            recipe_name = self._next_composite_recipe()
             if recipe_name is None:
                 return self._plan_standalone_row("standalone_benign", index)
             return self._plan_composite_row(recipe_name, index)
@@ -1434,7 +1442,7 @@ class DecisionTreeComposer:
         if recipe_type == "standalone":
             return self._build_standalone_row(self._standalone_recipe(), index)
         if recipe_type == "composite":
-            recipe_name = self._composite_recipe()
+            recipe_name = self._next_composite_recipe()
             if recipe_name is None:
                 return self._build_standalone_row("standalone_benign", index)
             return self._build_composite_row(recipe_name, index)
@@ -1571,7 +1579,7 @@ def main() -> None:
     print("\nPool sizes:")
     for name, size in composer.pool_sizes().items():
         print(f"- {name}: {size}")
-
+    print(COMPOSITE_RECIPE_SPECS)
     if args.summary_only:
         return
 

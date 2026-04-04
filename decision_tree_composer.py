@@ -239,6 +239,8 @@ class DecisionTreeComposer:
             self.pools["salad"][self.pools["salad"]["category_flat"].isin(INTENT_CATEGORIES)],
             group_col="metadata_flat",
         )
+        self._unicode_obfuscation_profiles = self._build_unicode_obfuscation_profiles()
+        self._unicode_obfuscation_profile_index = 0
 
     @staticmethod
     def _load_text_changer():
@@ -549,36 +551,45 @@ class DecisionTreeComposer:
             label,
         )
 
-    def _unicode_obfuscation_profile(self) -> list[dict[str, Any]]:
+    def _build_unicode_obfuscation_profiles(self, count: int = 16) -> list[list[dict[str, Any]]]:
         """
-        Build a small Unicode-based obfuscation profile.
+        Build a reusable pool of Unicode-based obfuscation profiles.
 
         This stays in the text-mutator path so obfuscated rows can be either
         encrypted or rendered through visible/invisible Unicode variants.
         """
-        profile: list[dict[str, Any]] = []
+        profiles: list[list[dict[str, Any]]] = []
+        for _ in range(max(1, count)):
+            profile: list[dict[str, Any]] = []
+            if self.rng.random() < 0.8:
+                profile.append(
+                    {
+                        "method": "unicode_variation",
+                        "chance": 1.0,
+                        "params": {"level": "broad"},
+                    }
+                )
 
-        if self.rng.random() < 0.8:
-            profile.append(
-                {
-                    "method": "unicode_variation",
-                    "chance": 1.0,
-                    "params": {"level": "broad"},
-                }
-            )
+            if self.rng.random() < 0.75 or not profile:
+                profile.append(
+                    {
+                        "method": "invisible_unicode",
+                        "chance": 1.0,
+                        "params": {
+                            "char_prob": round(self.rng.uniform(0.2, 0.6), 2),
+                            "max_insertions": self.rng.randint(1, 4),
+                        },
+                    }
+                )
+            profiles.append(profile)
+        return profiles
 
-        if self.rng.random() < 0.75 or not profile:
-            profile.append(
-                {
-                    "method": "invisible_unicode",
-                    "chance": 1.0,
-                    "params": {
-                        "char_prob": round(self.rng.uniform(0.2, 0.6), 2),
-                        "max_insertions": self.rng.randint(1, 4),
-                    },
-                }
-            )
-
+    def _next_unicode_obfuscation_profile(self) -> list[dict[str, Any]]:
+        profiles = self._unicode_obfuscation_profiles
+        if not profiles:
+            return []
+        profile = profiles[self._unicode_obfuscation_profile_index % len(profiles)]
+        self._unicode_obfuscation_profile_index += 1
         return profile
 
     def _compose_obfuscated_text(self, text: str) -> tuple[str, bool, str | None, str, str]:
@@ -602,7 +613,7 @@ class DecisionTreeComposer:
             assert isinstance(_text, str)
             return _text, True, label, "encryption", encryption_method
 
-        mutation_profile = self._unicode_obfuscation_profile()
+        mutation_profile = self._next_unicode_obfuscation_profile()
         rendered = self.text_changer.compose(
             text,
             operation="mutation",

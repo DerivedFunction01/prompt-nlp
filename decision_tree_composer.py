@@ -274,6 +274,7 @@ def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
     mutation_applied = False
     mutation_type = plan.get("mutation_type", "")
     obfuscation_applied = False
+    encryption_method = str(plan.get("encryption_method") or "")
 
     if recipe_type == "mutated":
         text_changer = _get_text_changer()
@@ -309,6 +310,7 @@ def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
         mutation_applied = True
         mutation_type = str(plan.get("obfuscation_kind") or obfuscation_mode)
         obfuscation_applied = True
+        encryption_method = str(rendered.get("encryption_method") or rendered.get("method") or encryption_method)
 
     final = dict(plan["base_row"])
     final.update(
@@ -325,7 +327,7 @@ def _materialize_decision_tree_plan(plan: dict[str, Any]) -> dict[str, Any]:
             "mutation_type": mutation_type,
             "obfuscation_applied": obfuscation_applied,
             "obfuscation_method": mutation_type if recipe_type == "obfuscated" else "",
-            "encryption_method": str(plan.get("encryption_method") or ""),
+            "encryption_method": encryption_method,
         }
     )
     return final
@@ -1008,6 +1010,9 @@ class DecisionTreeComposer:
             )  # type: ignore[arg-type]
             _text = rendered["text"]
             label = rendered["label"]
+            encryption_method = str(
+                rendered.get("encryption_method") or rendered.get("method") or encryption_method
+            )
             assert label is None or isinstance(label, str)
             assert isinstance(_text, str)
             return _text, True, label, "encryption", encryption_method

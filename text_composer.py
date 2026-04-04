@@ -31,8 +31,16 @@ class TextChanger:
         text: str,
         method: str | None = None,
         max_chars: int = 128,
-    ) -> str:
-        return self.encrypter.encrypt_span(text, method=method, max_chars=max_chars)
+        min_changed_chars: int = 1,
+        return_method: bool = False,
+    ) -> str | tuple[str, str]:
+        return self.encrypter.encrypt_span(
+            text,
+            method=method,
+            max_chars=max_chars,
+            min_changed_chars=min_changed_chars,
+            return_method=return_method,
+        )
 
     def code_format(self, method: str, text: str) -> dict[str, object]:
         return self.formatter.code_format(method, text)
@@ -121,12 +129,14 @@ class TextChanger:
                     final_label = self.OBFUSCATION_LABEL
 
             if encryption_method is not None:
-                payload = self.encrypt(
+                payload, used_method = self.encrypt(
                     payload,
                     method=encryption_method,
                     max_chars=max_chars,
+                    return_method=True,
                 )
                 final_label = self.OBFUSCATION_LABEL
+                encryption_method = used_method
 
             if code_method is not None and can_format:
                 rendered = self.formatter.code_format(
@@ -135,14 +145,20 @@ class TextChanger:
                     full_span=code_method == "admin_system_developer",
                 )
                 rendered["label"] = final_label
+                if encryption_method is not None:
+                    rendered["encryption_method"] = encryption_method
                 return rendered
 
-            return {
+            result = {
                 "text": payload,
                 "span": (0, len(payload)),
                 "method": None,
                 "label": final_label,
             }
+            if encryption_method is not None:
+                result["encryption_method"] = encryption_method
+                result["method"] = encryption_method
+            return result
 
         selected_ops = [
             op
@@ -165,8 +181,16 @@ class TextChanger:
                 final_label = self.OBFUSCATION_LABEL
 
         if "encryption" in selected_ops:
-            payload = self.encrypt(payload, method=None, max_chars=max_chars)
+            payload, used_method = self.encrypt(
+                payload,
+                method=None,
+                max_chars=max_chars,
+                return_method=True,
+            )
             final_label = self.OBFUSCATION_LABEL
+            selected_encryption_method = used_method
+        else:
+            selected_encryption_method = None
 
         if "formatting" in selected_ops and can_format:
             if final_label == self.JAILBREAK_LABEL:
@@ -178,11 +202,17 @@ class TextChanger:
             else:
                 rendered = self.formatter.random_code_format(payload)
             rendered["label"] = final_label
+            if selected_encryption_method is not None:
+                rendered["encryption_method"] = selected_encryption_method
             return rendered
 
-        return {
+        result = {
             "text": payload,
             "span": (0, len(payload)),
             "method": None,
             "label": final_label,
         }
+        if selected_encryption_method is not None:
+            result["encryption_method"] = selected_encryption_method
+            result["method"] = selected_encryption_method
+        return result

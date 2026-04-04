@@ -152,13 +152,11 @@ class PromptEditor:
     ]
 
     HUMAN_MARKERS = [
-        r"\[(?:USER|HUMAN)\]:?",
-        r"\b(?:USER|HUMAN)\b:?",
+        r"\[HUMAN\]:?",
     ]
 
     ASSISTANT_MARKERS = [
-        r"\[(?:ASSISTANT|AI)\]:?",
-        r"\b(?:ASSISTANT|AI)\b:?",
+        r"\[ASSISTANT\]:?",
     ]
 
     PERSONA_PREFIX_POOL = [

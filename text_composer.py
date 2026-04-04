@@ -59,7 +59,7 @@ class TextChanger:
         )
 
         if explicit_plan:
-            if mutation_profile is not None:
+            if mutation_profile is not None and encryption_method is None:
                 payload = self.mutate(payload, profile=mutation_profile, seed=seed)
 
             if encryption_method is not None:
@@ -81,6 +81,9 @@ class TextChanger:
         ]
         if not selected_ops:
             selected_ops = [random.choice(("mutation", "encryption", "formatting"))]
+
+        if "encryption" in selected_ops and "mutation" in selected_ops:
+            selected_ops = [op for op in selected_ops if op != "mutation"]
 
         if "mutation" in selected_ops:
             payload = self.mutate(payload, profile=None, seed=seed)

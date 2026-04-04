@@ -20,6 +20,7 @@ def main():
         print(rendered["text"])
         print(f"Span     : {rendered['span']}")
         print(f"Method   : {rendered['method']}")
+        print(f"Label    : {rendered['label']}")
         start, end = rendered["span"] # type: ignore
         print(f"Payload  : {rendered['text'][start:end]}") # type: ignore
         print()

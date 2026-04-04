@@ -903,6 +903,10 @@ class MutationOrchestrator:
 
         return [_profile_for(method) for method in methods]
 
+    def random_profile(self) -> list[dict]:
+        """Public wrapper for sampling a random mutation profile."""
+        return self._random_profile()
+
     def mutate(
         self,
         text: str,

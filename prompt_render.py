@@ -148,7 +148,7 @@ class PromptEditor:
         "Solution",
         "Model",
         "Bot",
-        "RAesponder",
+        "Responder",
     ]
 
     HUMAN_MARKERS = [

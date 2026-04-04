@@ -294,7 +294,7 @@ class DecisionTreeComposer:
         buckets: dict[str, deque[dict[str, Any]]] = {}
         for key, group in df.groupby(group_col, dropna=False):
             shuffled = group.sample(frac=1, random_state=self.rng.randint(0, 2**32 - 1))
-            buckets[str(key)] = deque(shuffled.to_dict("records"))
+            buckets[str(key)] = deque(shuffled.to_dict("records")) # type: ignore
         order = deque([key for key, bucket in buckets.items() if bucket])
         return {"buckets": buckets, "order": order}
 
@@ -551,7 +551,7 @@ class DecisionTreeComposer:
             label,
         )
 
-    def _build_unicode_obfuscation_profiles(self, count: int = 16) -> list[list[dict[str, Any]]]:
+    def _build_unicode_obfuscation_profiles(self, count: int = 4) -> list[list[dict[str, Any]]]:
         """
         Build a reusable pool of Unicode-based obfuscation profiles.
 
@@ -559,7 +559,32 @@ class DecisionTreeComposer:
         encrypted or rendered through visible/invisible Unicode variants.
         """
         profiles: list[list[dict[str, Any]]] = []
-        for _ in range(max(1, count)):
+        total = max(1, count)
+
+        profiles.append(
+            [
+                {
+                    "method": "unicode_variation",
+                    "chance": 1.0,
+                    "params": {"level": "broad"},
+                }
+            ]
+        )
+        if total > 1:
+            profiles.append(
+                [
+                    {
+                        "method": "invisible_unicode",
+                        "chance": 1.0,
+                        "params": {
+                            "char_prob": round(self.rng.uniform(0.2, 0.6), 2),
+                            "max_insertions": self.rng.randint(1, 4),
+                        },
+                    }
+                ]
+            )
+
+        while len(profiles) < total:
             profile: list[dict[str, Any]] = []
             if self.rng.random() < 0.8:
                 profile.append(
@@ -569,7 +594,6 @@ class DecisionTreeComposer:
                         "params": {"level": "broad"},
                     }
                 )
-
             if self.rng.random() < 0.75 or not profile:
                 profile.append(
                     {

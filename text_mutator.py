@@ -581,7 +581,8 @@ def _apply_pig_latin(token: str) -> str:
 # MutationOrchestrator
 # ---------------------------------------------------------------------------
 
-_STOP_WORDS = ["the", "and", "is", "of", "at", "with", "it", "or", "to", "a", "an"]
+_STOP_WORDS = ["the", "and", "is", "of", "at", "with", "it", "or", "to", "a", "an",
+               "el", "la", "en", "de", "un", "una", "los", "las", "por", "para"]
 
 
 def _stop_word_caller(params: dict | None) -> str:

@@ -129,7 +129,11 @@ class TextChanger:
                 final_label = self.OBFUSCATION_LABEL
 
             if code_method is not None and can_format:
-                rendered = self.formatter.code_format(code_method, payload)
+                rendered = self.formatter.code_format(
+                    code_method,
+                    payload,
+                    full_span=code_method == "admin_system_developer",
+                )
                 rendered["label"] = final_label
                 return rendered
 
@@ -166,7 +170,11 @@ class TextChanger:
 
         if "formatting" in selected_ops and can_format:
             if final_label == self.JAILBREAK_LABEL:
-                rendered = self.formatter.code_format("admin_system_developer", payload)
+                rendered = self.formatter.code_format(
+                    "admin_system_developer",
+                    payload,
+                    full_span=True,
+                )
             else:
                 rendered = self.formatter.random_code_format(payload)
             rendered["label"] = final_label

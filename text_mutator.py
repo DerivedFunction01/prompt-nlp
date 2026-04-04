@@ -845,7 +845,7 @@ class MutationOrchestrator:
             if name not in methods and self._is_randomizable(name)
         )
 
-        target_size = random.randint(1, min(3, len(pool) + len(methods)))
+        target_size = random.randint(1, min(2, len(pool) + len(methods)))
         while len(methods) < target_size and pool:
             choice = random.choice(pool)
             pool.remove(choice)

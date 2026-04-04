@@ -218,7 +218,7 @@ class PromptEditor:
         "org_possessive",
     ]
 
-    MODEL_VARIANT_SUFFIXES = ["mini", "small", "large", "plus", "pro", "lite", "thinking"]
+    MODEL_VARIANT_SUFFIXES = ["mini", "small", "large", "plus", "pro", "lite", "thinking", "nano", "preview"]
     MODEL_FICTIONAL_SUFFIXES = ["Chat", "AI", "ML", "LM", "LLM", "Bot", "GPT"]
     MODEL_VARIANT_SIZE_UNITS = ["M", "B", "T"]
     MODEL_VARIANT_ORG_CONNECTORS = ["from", "at", "by"]

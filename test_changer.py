@@ -35,18 +35,6 @@ def main():
         print(f"Original : {sentence}")
         rendered = changer.compose(
             sentence,
-            mutation_profile=[
-                {
-                    "method": "accent_mutation",
-                    "chance": 1.0,
-                    "params": {
-                        "token_prob": 0.6,
-                        "char_prob": 0.4,
-                        "max_char_mutation_ratio": 0.33,
-                    },
-                }
-            ],
-            encryption_method="rot13",
             code_method=lang,
             seed=42,
         )

@@ -4,6 +4,7 @@ import random
 
 
 class TextEncrypter:
+    METHODS = ("base64", "rot13", "hex", "binary", "morse", "caesar")
 
     MORSE_CODE_DICT = {
         "A": ".-",
@@ -85,7 +86,12 @@ class TextEncrypter:
                 result += char
         return result
 
-    def encrypt_span(self, text: str, method: str, max_chars: int = 128) -> str:
+    def encrypt_span(
+        self,
+        text: str,
+        method: str | None = None,
+        max_chars: int = 128,
+    ) -> str:
         """
         Encrypts and then truncates the result to max_chars.
         Returns the processed string.
@@ -98,6 +104,9 @@ class TextEncrypter:
             "morse": self.to_morse,
             "caesar": self.to_caesar,
         }
+
+        if method is None:
+            method = random.choice(self.METHODS)
 
         # Execute selected method
         try:

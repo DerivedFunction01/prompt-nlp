@@ -19,7 +19,12 @@ class TextChanger:
     ) -> str:
         return self.mutator.mutate(text, profile=profile, seed=seed)
 
-    def encrypt(self, text: str, method: str = "rot13", max_chars: int = 128) -> str:
+    def encrypt(
+        self,
+        text: str,
+        method: str | None = None,
+        max_chars: int = 128,
+    ) -> str:
         return self.encrypter.encrypt_span(text, method=method, max_chars=max_chars)
 
     def code_format(self, method: str, text: str) -> dict[str, object]:
@@ -43,11 +48,13 @@ class TextChanger:
         """
         payload = text
 
-        if mutation_profile:
-            payload = self.mutate(payload, profile=mutation_profile, seed=seed)
+        payload = self.mutate(payload, profile=mutation_profile, seed=seed)
 
-        if encryption_method:
-            payload = self.encrypt(payload, method=encryption_method, max_chars=max_chars)
+        payload = self.encrypt(
+            payload,
+            method=encryption_method,
+            max_chars=max_chars,
+        )
 
         if code_method:
             return self.formatter.code_format(code_method, payload)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -231,6 +232,11 @@ class DecisionTreeComposer:
         self.raw_df = full_df2.copy() if full_df2 is not None else load_full_df2(self.parquet_path)
         self.df = normalize_full_df2(self.raw_df)
         self.pools = split_source_pools(self.df)
+        self.salad_sampler = self._build_grouped_sampler(self.pools["salad"], group_col="metadata_flat")
+        self.salad_intent_sampler = self._build_grouped_sampler(
+            self.pools["salad"][self.pools["salad"]["category_flat"].isin(INTENT_CATEGORIES)],
+            group_col="metadata_flat",
+        )
 
     @staticmethod
     def _load_text_changer():
@@ -273,10 +279,47 @@ class DecisionTreeComposer:
             raise ValueError(f"Pool {pool_name!r} is empty or missing")
         return pool.sample(n=1, random_state=self.rng.randint(0, 2**32 - 1)).iloc[0]
 
+    def _build_grouped_sampler(self, df: pd.DataFrame, *, group_col: str) -> dict[str, Any]:
+        """
+        Build a round-robin sampler over a grouped dataframe.
+
+        Rows are shuffled within each metadata group once up front, then we
+        cycle across groups so the output uses more of the Salad metadata space
+        instead of overfitting to the largest labels.
+        """
+        buckets: dict[str, deque[dict[str, Any]]] = {}
+        for key, group in df.groupby(group_col, dropna=False):
+            shuffled = group.sample(frac=1, random_state=self.rng.randint(0, 2**32 - 1))
+            buckets[str(key)] = deque(shuffled.to_dict("records"))
+        order = deque([key for key, bucket in buckets.items() if bucket])
+        return {"buckets": buckets, "order": order}
+
+    def _sample_grouped_row(self, sampler: dict[str, Any], *, fallback_pool: str) -> pd.Series:
+        buckets: dict[str, deque[dict[str, Any]]] = sampler["buckets"]
+        order: deque[str] = sampler["order"]
+        while order:
+            key = order.popleft()
+            bucket = buckets.get(key)
+            if bucket:
+                row = bucket.popleft()
+                if bucket:
+                    order.append(key)
+                return pd.Series(row)
+        return self._sample_pool_row(fallback_pool)
+
+    def _sample_salad_row(self, *, intent_only: bool = False) -> pd.Series:
+        sampler = self.salad_intent_sampler if intent_only else self.salad_sampler
+        return self._sample_grouped_row(sampler, fallback_pool="salad")
+
     def _sample_persona_context_row(self) -> pd.Series:
-        context_pools = [name for name in ("salad", "openhermes", "cais_mmlu", "finepersonas") if len(self.pools.get(name, []))]
+        context_pools = [name for name in ("openhermes", "cais_mmlu", "finepersonas") if len(self.pools.get(name, []))]
+        if self.pools.get("salad") is not None and not self.pools["salad"].empty:
+            context_pools.append("salad")
         if context_pools:
-            return self._sample_pool_row(self._choice(context_pools))
+            choice = self._choice(context_pools)
+            if choice == "salad":
+                return self._sample_salad_row(intent_only=False)
+            return self._sample_pool_row(choice)
         return self._sample_pool_row("all")
 
     def _pick_persona_row(self, context_row: pd.Series | dict[str, Any] | None = None) -> pd.Series:
@@ -470,7 +513,12 @@ class DecisionTreeComposer:
             if len(assembled_text) >= min_chars:
                 break
             pool_name = self._choice(filler_pools)
-            row = self._sample_pool_row(pool_name)
+            if pool_name == "salad":
+                row = self._sample_salad_row(intent_only=False)
+            elif pool_name == "salad_intent":
+                row = self._sample_salad_row(intent_only=True)
+            else:
+                row = self._sample_pool_row(pool_name)
             working.append(self._segment_from_row(row))
         return working
 
@@ -567,11 +615,7 @@ class DecisionTreeComposer:
             jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
             base = self._sample_pool_row(jailbreak_pool)
         else:
-            intent_pool = self._intent_rows()
-            if intent_pool.empty:
-                base = self._sample_pool_row("salad")
-            else:
-                base = intent_pool.sample(n=1, random_state=self.rng.randint(0, 2**32 - 1)).iloc[0]
+            base = self._sample_salad_row(intent_only=True)
 
         segment = self._segment_from_row(base)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
@@ -607,14 +651,14 @@ class DecisionTreeComposer:
         filler_pools: list[str] = []
 
         if recipe_name == "persona_plus_nshot_plus_intent":
-            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("salad")))
+            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_salad_row(intent_only=False)))
             nshot = self._segment_from_row(self._sample_pool_row("nshot"))
-            intent_row = self._sample_pool_row("salad")
+            intent_row = self._sample_salad_row(intent_only=True)
             intent = self._segment_from_row(intent_row)
             segments = [persona, nshot, intent]
             target_category = intent["label"]
             target_intent = intent["label"]
-            filler_pools = ["salad"]
+            filler_pools = ["salad_intent"]
         elif recipe_name == "persona_plus_format":
             persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("cais_mmlu")))
             fmt = self._segment_from_row(self._sample_pool_row("format"))
@@ -624,12 +668,12 @@ class DecisionTreeComposer:
         elif recipe_name == "jailbreak_plus_intent":
             jailbreak_pool = "jailbreak_clean" if len(self.pools.get("jailbreak_clean", [])) else "violation"
             jailbreak = self._segment_from_row(self._sample_pool_row(jailbreak_pool))
-            intent_row = self._sample_pool_row("salad")
+            intent_row = self._sample_salad_row(intent_only=True)
             intent = self._segment_from_row(intent_row)
             segments = [jailbreak, intent]
             target_category = intent["label"]
             target_intent = intent["label"]
-            filler_pools = [jailbreak_pool, "salad"]
+            filler_pools = [jailbreak_pool, "salad_intent"]
         elif recipe_name == "benign_plus_format":
             benign = self._segment_from_row(self._sample_pool_row("benign"))
             fmt = self._segment_from_row(self._sample_pool_row("format"))
@@ -637,8 +681,8 @@ class DecisionTreeComposer:
             target_category = fmt["label"] or benign["label"]
             filler_pools = ["format"]
         elif recipe_name == "salad_plus_salad":
-            first = self._segment_from_row(self._sample_pool_row("salad"))
-            second = self._segment_from_row(self._sample_pool_row("salad"))
+            first = self._segment_from_row(self._sample_salad_row(intent_only=False))
+            second = self._segment_from_row(self._sample_salad_row(intent_only=False))
             segments = [first, second]
             target_category = first["label"]
             target_intent = first["label"] if first["label"] in INTENT_CATEGORIES else ""
@@ -695,7 +739,8 @@ class DecisionTreeComposer:
         }
 
     def _build_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
-        base_row = self._sample_pool_row(self._choice(["benign", "persona", "format", "nshot", "salad"]))
+        base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
+        base_row = self._sample_salad_row(intent_only=False) if base_choice == "salad" else self._sample_pool_row(base_choice)
         segment = self._segment_from_row(base_row)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
         assembled_text, spans = self._join_segments(rendered_segments)

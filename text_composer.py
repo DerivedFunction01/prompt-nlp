@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import string
 from typing import Literal
 
 from text_formatter import TextFormatter
@@ -57,6 +58,30 @@ class TextChanger:
             if level in {"accent", "broad"}:
                 return True
         return False
+
+    @staticmethod
+    def _profile_uses_unicode_variation(profile: list[dict] | None) -> bool:
+        if not profile:
+            return False
+        return any(step.get("method") == "unicode_variation" for step in profile)
+
+    @staticmethod
+    def _text_prefers_encoding(text: str) -> bool:
+        visible = [char for char in text if not char.isspace()]
+        if not visible:
+            return False
+
+        ascii_letters = sum(1 for char in visible if char in string.ascii_letters)
+        if ascii_letters == 0:
+            return True
+        return ascii_letters / len(visible) < 0.4
+
+    def _mutation_profile_should_use_encoding(
+        self,
+        text: str,
+        profile: list[dict] | None,
+    ) -> bool:
+        return self._profile_uses_unicode_variation(profile) and self._text_prefers_encoding(text)
 
     def compose(
         self,
@@ -123,7 +148,19 @@ class TextChanger:
                 else:
                     code_method = random.choice(self.formatter.FORMATTERS)
 
-            if mutation_profile is not None and encryption_method is None:
+            if (
+                mutation_profile is not None
+                and encryption_method is None
+                and self._mutation_profile_should_use_encoding(payload, mutation_profile)
+            ):
+                payload, encryption_method = self.encrypt(
+                    payload,
+                    method=None,
+                    max_chars=max_chars,
+                    return_method=True,
+                )
+                final_label = self.OBFUSCATION_LABEL
+            elif mutation_profile is not None and encryption_method is None:
                 payload = self.mutate(payload, profile=mutation_profile, seed=seed)
                 if final_label is None and self._profile_is_obfuscation(mutation_profile):
                     final_label = self.OBFUSCATION_LABEL
@@ -174,11 +211,22 @@ class TextChanger:
         if "encryption" in selected_ops and "mutation" in selected_ops:
             selected_ops = [op for op in selected_ops if op != "mutation"]
 
+        selected_encryption_method = None
         if "mutation" in selected_ops:
             sampled_profile = self.mutator.random_profile()
-            payload = self.mutate(payload, profile=sampled_profile, seed=seed)
-            if final_label is None and self._profile_is_obfuscation(sampled_profile):
+            if self._mutation_profile_should_use_encoding(payload, sampled_profile):
+                payload, used_method = self.encrypt(
+                    payload,
+                    method=None,
+                    max_chars=max_chars,
+                    return_method=True,
+                )
                 final_label = self.OBFUSCATION_LABEL
+                selected_encryption_method = used_method
+            else:
+                payload = self.mutate(payload, profile=sampled_profile, seed=seed)
+                if final_label is None and self._profile_is_obfuscation(sampled_profile):
+                    final_label = self.OBFUSCATION_LABEL
 
         if "encryption" in selected_ops:
             payload, used_method = self.encrypt(
@@ -189,8 +237,6 @@ class TextChanger:
             )
             final_label = self.OBFUSCATION_LABEL
             selected_encryption_method = used_method
-        else:
-            selected_encryption_method = None
 
         if "formatting" in selected_ops and can_format:
             if final_label == self.JAILBREAK_LABEL:

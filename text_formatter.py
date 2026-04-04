@@ -1050,7 +1050,10 @@ class TextFormatter:
         "ACTIVE",
         "INACTIVE",
         "TRUE",
-        "FALSE",
+        "FALSE",        
+        "ENABLED",
+        "DISABLED",
+        
     )
     ROLE_EMOJIS: tuple[str, ...] = (
         "🚨",

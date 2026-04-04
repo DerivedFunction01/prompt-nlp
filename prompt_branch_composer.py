@@ -45,6 +45,10 @@ class PromptBranchComposer:
         "Qwen",
         "Nemotron",
         "MiniMax",
+        "oLMO",
+        "GLM",
+        "Pangu",
+        "Command-R"
     ]
 
     DEFAULT_MODEL_ORGS = {
@@ -63,6 +67,10 @@ class PromptBranchComposer:
         "qwen": "Alibaba",
         "nemotron": "NVIDIA",
         "minimax": "MiniMax",
+        "olmo": "oLMO",
+        "glm": "GLM",
+        "pangu": "Pangu",
+        "command-r": "Cohere"
     }
 
     ORGANIZATION_SEEDS = [

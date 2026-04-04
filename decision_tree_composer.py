@@ -578,6 +578,23 @@ class DecisionTreeComposer:
             return self._sample_pool_row("persona")
         return pd.Series(picked)
 
+    def _sample_obfuscation_base_row(self) -> pd.Series:
+        """
+        Pick the source row used for obfuscation.
+
+        When `allow_faker_for_obfuscation` is enabled, we mix in a random row
+        from the full source table about half the time instead of limiting
+        obfuscation to the standalone-friendly pools. That keeps provenance
+        intact while making obfuscated examples less repetitive.
+        """
+        if self.config.allow_faker_for_obfuscation and self.rng.random() < 0.5:
+            return self._sample_pool_row("all")
+
+        base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
+        if base_choice == "salad":
+            return self._sample_salad_row()
+        return self._sample_pool_row(base_choice)
+
     @staticmethod
     def _cell_text(value: Any) -> str:
         tokens = _flatten_for_match(value)
@@ -1208,8 +1225,11 @@ class DecisionTreeComposer:
         }
 
     def _build_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
-        base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
-        base_row = self._sample_salad_row() if base_choice == "salad" else self._sample_pool_row(base_choice)
+        if recipe_type == "obfuscated":
+            base_row = self._sample_obfuscation_base_row()
+        else:
+            base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
+            base_row = self._sample_salad_row() if base_choice == "salad" else self._sample_pool_row(base_choice)
         segment = self._segment_from_row(base_row)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
         assembled_text, spans = self._join_segments(rendered_segments)
@@ -1344,8 +1364,11 @@ class DecisionTreeComposer:
         }
 
     def _plan_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
-        base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
-        base_row = self._sample_salad_row() if base_choice == "salad" else self._sample_pool_row(base_choice)
+        if recipe_type == "obfuscated":
+            base_row = self._sample_obfuscation_base_row()
+        else:
+            base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
+            base_row = self._sample_salad_row() if base_choice == "salad" else self._sample_pool_row(base_choice)
         segment = self._segment_from_row(base_row)
         original_segments = [segment]
         category = segment["label"]

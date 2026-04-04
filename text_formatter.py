@@ -1193,6 +1193,14 @@ class TextFormatter:
                     f"[[/{title}]]",
                 ]
             )
+        if top == "arrow":
+            return "\n".join(
+                [
+                    f">>> {opener} {title} {state}",
+                    text,
+                    f"<<< {closer} {title} {TextFormatter._apply_case('off', case_style)}",
+                ]
+            )
         return "\n".join(
             [
                 f"### {title}: {state}",
@@ -1258,16 +1266,19 @@ class TextFormatter:
             "\n".join(
                 [
                     self._banner_block(
-                        self._maybe_emoji_suffix(
-                            self._join_unique_parts(title_text, role_text, header_text).replace(" ", "_"),
-                            enabled=emoji_style,
-                        ),
-                        self._maybe_emoji_prefix(text, enabled=emoji_style),
+                        self._join_unique_parts(title_text, role_text, header_text).replace(" ", "_"),
+                        "Administrative context begins here.",
                         variant="dashed",
                         case_style=case_style,
                     ),
                     self._role_block(role_text, self._maybe_emoji_suffix(text, enabled=emoji_style), style=("(", ")")),
                 ]
+            ),
+            self._banner_block(
+                self._join_unique_parts(title_text, role_text, suffix_text),
+                self._maybe_emoji_prefix(text, enabled=emoji_style),
+                variant="arrow",
+                case_style=case_style,
             ),
         ]
         return random.choice(variants)

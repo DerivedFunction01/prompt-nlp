@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import random
 
+from tqdm.auto import tqdm
+
 from labels import PromptEntity
 
 
@@ -187,6 +189,7 @@ class DecisionTreeConfig:
     composite_fraction: float | None = None
     nshot_min_examples: int = 1
     nshot_max_examples: int = 4
+    shuffle_composite_segments: bool = True
     min_assembled_chars: int = 180
     max_fill_segments: int = 2
     preserve_original_rows: bool = True
@@ -220,6 +223,7 @@ class DecisionTreeComposer:
         self.parquet_path = Path(parquet_path)
         self.rng = random.Random(self.config.seed)
         self.text_changer = self._load_text_changer()
+        self.prompt_editor_cls = self._load_prompt_editor()
         self.raw_df = full_df2.copy() if full_df2 is not None else load_full_df2(self.parquet_path)
         self.df = normalize_full_df2(self.raw_df)
         self.pools = split_source_pools(self.df)
@@ -231,6 +235,22 @@ class DecisionTreeComposer:
         except Exception:
             return None
         return TextChanger()
+
+    @staticmethod
+    def _load_prompt_editor():
+        try:
+            from prompt_render import PromptEditor
+        except Exception:
+            return None
+        return PromptEditor
+
+    @staticmethod
+    def _load_persona_picker():
+        try:
+            from persona_picker import pick_persona_for_row
+        except Exception:
+            return None
+        return pick_persona_for_row
 
     def summary(self) -> dict[str, Any]:
         return summarize_full_df2(self.raw_df)
@@ -248,6 +268,34 @@ class DecisionTreeComposer:
         if pool is None or pool.empty:
             raise ValueError(f"Pool {pool_name!r} is empty or missing")
         return pool.sample(n=1, random_state=self.rng.randint(0, 2**32 - 1)).iloc[0]
+
+    def _sample_persona_context_row(self) -> pd.Series:
+        context_pools = [name for name in ("salad", "openhermes", "cais_mmlu", "finepersonas") if len(self.pools.get(name, []))]
+        if context_pools:
+            return self._sample_pool_row(self._choice(context_pools))
+        return self._sample_pool_row("all")
+
+    def _pick_persona_row(self, context_row: pd.Series | dict[str, Any] | None = None) -> pd.Series:
+        picker = self._load_persona_picker()
+        persona_pool = self.pools.get("persona")
+        if persona_pool is None or persona_pool.empty:
+            raise ValueError("Pool 'persona' is empty or missing")
+
+        if picker is None:
+            return self._sample_pool_row("persona")
+
+        if context_row is None:
+            context_row = self._sample_persona_context_row()
+
+        if isinstance(context_row, pd.Series):
+            context = context_row.to_dict()
+        else:
+            context = dict(context_row)
+
+        picked = picker(persona_pool, context, rng=self.rng)
+        if not picked:
+            return self._sample_pool_row("persona")
+        return pd.Series(picked)
 
     @staticmethod
     def _cell_text(value: Any) -> str:
@@ -267,6 +315,54 @@ class DecisionTreeComposer:
             "dataset_source": self._cell_first(row["dataset_source"]),
             "metadata": self._cell_first(row["metadata"]),
         }
+
+    def _render_segment(self, segment: dict[str, Any], *, row_seed: int, segment_index: int) -> dict[str, Any]:
+        rendered = dict(segment)
+        label = rendered.get("label", "")
+        text = str(rendered.get("text", ""))
+
+        if label == PromptEntity.NSHOT.value and self.prompt_editor_cls is not None:
+            editor = self.prompt_editor_cls(seed=row_seed + segment_index)
+            try:
+                output = editor.compose(texts=[text], categories=[PromptEntity.NSHOT.value])
+                if output:
+                    text = str(output[0].get("text", text))
+                    rendered["render_branch"] = output[0].get("branch")
+                    rendered["render_variant"] = output[0].get("variant")
+            except Exception:
+                pass
+
+        rendered["text"] = text
+        return rendered
+
+    def _render_segments(self, segments: list[dict[str, Any]], *, row_seed: int) -> list[dict[str, Any]]:
+        return [
+            self._render_segment(segment, row_seed=row_seed, segment_index=index)
+            for index, segment in enumerate(segments)
+        ]
+
+    def _shuffle_composite_segments(self, segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.config.shuffle_composite_segments or len(segments) < 2:
+            return segments
+
+        blocks: list[list[dict[str, Any]]] = []
+        current_nshot_block: list[dict[str, Any]] = []
+
+        for segment in segments:
+            if segment.get("label") == PromptEntity.NSHOT.value:
+                current_nshot_block.append(segment)
+                continue
+
+            if current_nshot_block:
+                blocks.append(current_nshot_block)
+                current_nshot_block = []
+            blocks.append([segment])
+
+        if current_nshot_block:
+            blocks.append(current_nshot_block)
+
+        self.rng.shuffle(blocks)
+        return [segment for block in blocks for segment in block]
 
     def _join_segments(self, segments: list[dict[str, Any]]) -> tuple[str, list[list[int]]]:
         text_parts: list[str] = []
@@ -391,7 +487,7 @@ class DecisionTreeComposer:
         if recipe_name == "standalone_benign":
             base = self._sample_pool_row("benign")
         elif recipe_name == "standalone_persona":
-            base = self._sample_pool_row("persona")
+            base = self._pick_persona_row()
         elif recipe_name == "standalone_format":
             base = self._sample_pool_row("format")
         elif recipe_name == "standalone_nshot":
@@ -407,7 +503,8 @@ class DecisionTreeComposer:
                 base = intent_pool.sample(n=1, random_state=self.rng.randint(0, 2**32 - 1)).iloc[0]
 
         segment = self._segment_from_row(base)
-        assembled_text, spans = self._join_segments([segment])
+        rendered_segments = self._render_segments([segment], row_seed=row_id)
+        assembled_text, spans = self._join_segments(rendered_segments)
         category = segment["label"]
         return {
             "row_id": f"row_{row_id:06d}",
@@ -421,12 +518,12 @@ class DecisionTreeComposer:
             "metadata": segment["metadata"],
             "original_text": assembled_text,
             "text": assembled_text,
-            "segments": [segment],
+            "segments": rendered_segments,
             "segment_count": 1,
             "segment_spans_original": spans,
             "segment_spans_merged": spans,
             "original_segments": [segment],
-            "transformed_segments": [segment],
+            "transformed_segments": rendered_segments,
             "mutation_applied": False,
             "mutation_type": None,
             "obfuscation_applied": False,
@@ -439,7 +536,7 @@ class DecisionTreeComposer:
         filler_pools: list[str] = []
 
         if recipe_name == "persona_plus_nshot_plus_intent":
-            persona = self._segment_from_row(self._sample_pool_row("persona"))
+            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("salad")))
             nshot = self._segment_from_row(self._sample_pool_row("nshot"))
             intent_row = self._sample_pool_row("salad")
             intent = self._segment_from_row(intent_row)
@@ -448,7 +545,7 @@ class DecisionTreeComposer:
             target_intent = intent["label"]
             filler_pools = ["salad"]
         elif recipe_name == "persona_plus_format":
-            persona = self._segment_from_row(self._sample_pool_row("persona"))
+            persona = self._segment_from_row(self._pick_persona_row(context_row=self._sample_pool_row("cais_mmlu")))
             fmt = self._segment_from_row(self._sample_pool_row("format"))
             segments = [persona, fmt]
             target_category = fmt["label"] or persona["label"]
@@ -483,8 +580,8 @@ class DecisionTreeComposer:
             target_category = first["label"]
             filler_pools = [jailbreak_pool]
         elif recipe_name == "persona_plus_persona":
-            first = self._segment_from_row(self._sample_pool_row("persona"))
-            second = self._segment_from_row(self._sample_pool_row("persona"))
+            first = self._segment_from_row(self._pick_persona_row())
+            second = self._segment_from_row(self._pick_persona_row())
             segments = [first, second]
             target_category = first["label"]
             filler_pools = ["persona"]
@@ -497,7 +594,9 @@ class DecisionTreeComposer:
             min_chars=self.config.min_assembled_chars,
             max_fill_segments=self.config.max_fill_segments,
         )
-        assembled_text, spans = self._join_segments(segments)
+        segments = self._shuffle_composite_segments(segments)
+        rendered_segments = self._render_segments(segments, row_seed=row_id)
+        assembled_text, spans = self._join_segments(rendered_segments)
         category = target_category or segments[0]["label"]
         if not category:
             category = segments[0]["label"]
@@ -513,12 +612,12 @@ class DecisionTreeComposer:
             "metadata": segments[0]["metadata"],
             "original_text": assembled_text,
             "text": assembled_text,
-            "segments": segments,
-            "segment_count": len(segments),
+            "segments": rendered_segments,
+            "segment_count": len(rendered_segments),
             "segment_spans_original": spans,
             "segment_spans_merged": spans,
             "original_segments": segments,
-            "transformed_segments": segments,
+            "transformed_segments": rendered_segments,
             "mutation_applied": False,
             "mutation_type": None,
             "obfuscation_applied": False,
@@ -527,7 +626,8 @@ class DecisionTreeComposer:
     def _build_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
         base_row = self._sample_pool_row(self._choice(["benign", "persona", "format", "nshot", "salad"]))
         segment = self._segment_from_row(base_row)
-        assembled_text, spans = self._join_segments([segment])
+        rendered_segments = self._render_segments([segment], row_seed=row_id)
+        assembled_text, spans = self._join_segments(rendered_segments)
         transformed_text, mutation_applied, transform_label = self._compose_text(assembled_text, recipe_type)
         final_category = segment["label"]
         if recipe_type == "obfuscated":
@@ -548,12 +648,12 @@ class DecisionTreeComposer:
             "metadata": segment["metadata"],
             "original_text": assembled_text,
             "text": transformed_text,
-            "segments": [segment],
+            "segments": rendered_segments,
             "segment_count": 1,
             "segment_spans_original": spans,
             "segment_spans_merged": spans,
             "original_segments": [segment],
-            "transformed_segments": [segment],
+            "transformed_segments": rendered_segments,
             "mutation_applied": True,
             "mutation_type": mutation_type,
             "obfuscation_applied": obfuscation_applied,
@@ -572,7 +672,9 @@ class DecisionTreeComposer:
         Build a planned training dataframe using the recipe planner.
         """
         target_rows = self.config.target_rows or len(self.df)
-        records = [self._build_one(i, target_rows) for i in range(target_rows)]
+        iterator = tqdm(range(target_rows), total=target_rows, desc="Building decision-tree rows")
+
+        records = [self._build_one(i, target_rows) for i in iterator]
         planned_df = pd.DataFrame(records)
         if not self.config.return_debug_columns:
             keep = ["text", "category", "source", "dataset_source", "metadata"]

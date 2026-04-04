@@ -874,14 +874,14 @@ class MutationOrchestrator:
                 return {
                     "method": method,
                     "chance": 1.0,
-                    "params": {"token_prob": round(random.uniform(0.3, 0.8), 2)},
+                    "params": {"token_prob": round(random.uniform(0.2, 0.5), 2)},
                 }
             if method == "interval_flip_char":
                 return {
                     "method": method,
                     "chance": 1.0,
                     "params": {
-                        "token_prob": round(random.uniform(0.3, 0.8), 2),
+                        "token_prob": round(random.uniform(0.2, 0.5), 2),
                         "char_prob": round(random.uniform(0.2, 0.6), 2),
                     },
                 }
@@ -890,7 +890,7 @@ class MutationOrchestrator:
                     "method": method,
                     "chance": 1.0,
                     "params": {
-                        "word_prob": round(random.uniform(0.3, 0.8), 2),
+                        "word_prob": round(random.uniform(0.2, 0.45), 2),
                         "char_prob": round(random.uniform(0.2, 0.5), 2),
                     },
                 }
@@ -899,7 +899,7 @@ class MutationOrchestrator:
                     "method": method,
                     "chance": 1.0,
                     "params": {
-                        "token_prob": round(random.uniform(0.4, 0.9), 2),
+                        "token_prob": round(random.uniform(0.25, 0.55), 2),
                         "char_prob": round(random.uniform(0.2, 0.6), 2),
                         "max_char_mutation_ratio": 0.33,
                     },
@@ -908,7 +908,7 @@ class MutationOrchestrator:
                 return {
                     "method": method,
                     "chance": 1.0,
-                    "params": {"token_prob": round(random.uniform(0.4, 0.9), 2)},
+                    "params": {"token_prob": round(random.uniform(0.25, 0.55), 2)},
                 }
             if method == "word_chunk_swap":
                 return {"method": method, "chance": 1.0}
@@ -919,7 +919,7 @@ class MutationOrchestrator:
                     "method": method,
                     "chance": 1.0,
                     "params": {
-                        "token_prob": round(random.uniform(0.4, 0.9), 2),
+                        "token_prob": round(random.uniform(0.25, 0.55), 2),
                         "char_prob": round(random.uniform(0.2, 0.6), 2),
                         "max_char_mutation_ratio": 0.33,
                     },
@@ -929,7 +929,7 @@ class MutationOrchestrator:
                     "method": method,
                     "chance": 1.0,
                     "params": {
-                        "token_prob": round(random.uniform(0.4, 0.9), 2),
+                        "token_prob": round(random.uniform(0.25, 0.55), 2),
                         "char_prob": round(random.uniform(0.2, 0.6), 2),
                         "max_char_mutation_ratio": 0.33,
                     },
@@ -938,7 +938,7 @@ class MutationOrchestrator:
                 return {
                     "method": method,
                     "chance": 1.0,
-                    "params": {"token_prob": round(random.uniform(0.4, 0.9), 2)},
+                    "params": {"token_prob": round(random.uniform(0.25, 0.55), 2)},
                 }
             if method == "unicode_variation":
                 return {

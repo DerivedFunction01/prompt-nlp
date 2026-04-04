@@ -5,28 +5,16 @@ import re
 from collections.abc import Sequence
 
 from labels import PromptEntity
-
-try:
-    from faker import Faker
-except ImportError:  # pragma: no cover - optional dependency
-    Faker = None
-
-try:
-    import randomname
-except ImportError:  # pragma: no cover - optional dependency
-    randomname = None
+from faker import Faker
+import randomname
 
 
-class PromptBranchComposer:
+
+
+class PromptEditor:
     """
-    Higher-level text composer that applies category-aware transformations.
+    Higher-level text editor that applies category-aware transformations.
 
-    Current branches:
-    - NSHOT: replace chat delimiters with model-aware variants
-    - PERSONA: prepend a persona-style lead-in
-
-    The class is intentionally lightweight so it can sit above TextChanger
-    without acting as a full prompt router yet.
     """
 
     DEFAULT_MODEL_NAMES = [

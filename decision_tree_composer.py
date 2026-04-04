@@ -49,7 +49,6 @@ _COMPOSITE_RECIPE_ORDER: tuple[str, ...] = (
     "salad",
     "nshot",
     "format",
-    "salad_intent",
 )
 _COMPOSITE_RECIPE_ANCHORS: tuple[str, ...] = (
     "persona",
@@ -466,10 +465,6 @@ class DecisionTreeComposer:
         self.df = normalize_full_df2(self.raw_df)
         self.pools = split_source_pools(self.df)
         self.salad_sampler = self._build_grouped_sampler(self.pools["salad"], group_col="metadata_flat")
-        self.salad_intent_sampler = self._build_grouped_sampler(
-            self.pools["salad"][self.pools["salad"]["category_flat"].isin(INTENT_CATEGORIES)],
-            group_col="metadata_flat",
-        )
         self._unicode_obfuscation_profiles = self._build_unicode_obfuscation_profiles()
         self._unicode_obfuscation_profile_index = 0
         self._composite_recipe_cycle: deque[str] = deque()
@@ -543,9 +538,8 @@ class DecisionTreeComposer:
                 return pd.Series(row)
         return self._sample_pool_row(fallback_pool)
 
-    def _sample_salad_row(self, *, intent_only: bool = False) -> pd.Series:
-        sampler = self.salad_intent_sampler if intent_only else self.salad_sampler
-        return self._sample_grouped_row(sampler, fallback_pool="salad")
+    def _sample_salad_row(self) -> pd.Series:
+        return self._sample_grouped_row(self.salad_sampler, fallback_pool="salad")
 
     def _sample_persona_context_row(self) -> pd.Series:
         context_pools = [name for name in ("openhermes", "cais_mmlu", "finepersonas") if len(self.pools.get(name, []))]
@@ -554,7 +548,7 @@ class DecisionTreeComposer:
         if context_pools:
             choice = self._choice(context_pools)
             if choice == "salad":
-                return self._sample_salad_row(intent_only=False)
+                return self._sample_salad_row()
             return self._sample_pool_row(choice)
         return self._sample_pool_row("all")
 
@@ -852,8 +846,6 @@ class DecisionTreeComposer:
             return self._pool_has("salad")
         if kind == "jailbreak":
             return self._pool_has(self._adverse_pool_name())
-        if kind == "salad_intent":
-            return self._pool_has("salad") and not self._intent_rows().empty
         return False
 
     def _available_composite_recipe_names(self) -> list[str]:
@@ -874,9 +866,7 @@ class DecisionTreeComposer:
         elif kind == "nshot":
             row = self._sample_pool_row("nshot")
         elif kind == "salad":
-            row = self._sample_salad_row(intent_only=False)
-        elif kind == "salad_intent":
-            row = self._sample_salad_row(intent_only=True)
+            row = self._sample_salad_row()
         elif kind == "jailbreak":
             row = self._sample_pool_row(self._adverse_pool_name())
         else:
@@ -893,9 +883,7 @@ class DecisionTreeComposer:
         if kind == "nshot":
             return self._sample_pool_row("nshot")
         if kind == "salad":
-            return self._sample_salad_row(intent_only=False)
-        if kind == "salad_intent":
-            return self._sample_salad_row(intent_only=True)
+            return self._sample_salad_row()
         if kind == "jailbreak":
             return self._sample_pool_row(self._adverse_pool_name())
         raise ValueError(f"Unknown composite source kind: {kind!r}")
@@ -1130,11 +1118,6 @@ class DecisionTreeComposer:
             "segment_spans_merged": spans,
         }
 
-    def _intent_rows(self) -> pd.DataFrame:
-        return self.pools["salad"][
-            self.pools["salad"]["category_flat"].isin(INTENT_CATEGORIES)
-        ]
-
     def _build_standalone_row(self, recipe_name: str, row_id: int) -> dict[str, Any]:
         if recipe_name == "standalone_benign":
             base = self._sample_pool_row("benign")
@@ -1148,7 +1131,7 @@ class DecisionTreeComposer:
             jailbreak_pool = "jailbreak" if len(self.pools.get("jailbreak", [])) else "violation"
             base = self._sample_pool_row(jailbreak_pool)
         else:
-            base = self._sample_salad_row(intent_only=True)
+            base = self._sample_salad_row()
 
         segment = self._segment_from_row(base)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
@@ -1211,7 +1194,7 @@ class DecisionTreeComposer:
 
     def _build_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
         base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
-        base_row = self._sample_salad_row(intent_only=False) if base_choice == "salad" else self._sample_pool_row(base_choice)
+        base_row = self._sample_salad_row() if base_choice == "salad" else self._sample_pool_row(base_choice)
         segment = self._segment_from_row(base_row)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
         assembled_text, spans = self._join_segments(rendered_segments)
@@ -1266,7 +1249,7 @@ class DecisionTreeComposer:
             jailbreak_pool = "jailbreak" if len(self.pools.get("jailbreak", [])) else "violation"
             base = self._sample_pool_row(jailbreak_pool)
         else:
-            base = self._sample_salad_row(intent_only=True)
+            base = self._sample_salad_row()
 
         segment = self._segment_from_row(base)
         category = segment["label"]
@@ -1343,7 +1326,7 @@ class DecisionTreeComposer:
 
     def _plan_transform_row(self, recipe_type: str, row_id: int) -> dict[str, Any]:
         base_choice = self._choice(["benign", "persona", "format", "nshot", "salad"])
-        base_row = self._sample_salad_row(intent_only=False) if base_choice == "salad" else self._sample_pool_row(base_choice)
+        base_row = self._sample_salad_row() if base_choice == "salad" else self._sample_pool_row(base_choice)
         segment = self._segment_from_row(base_row)
         original_segments = [segment]
         category = segment["label"]

@@ -26,6 +26,22 @@ class TextFormatter:
         "script",
         "json",
     )
+    COMMENT_FORMATTERS = (
+        "python",
+        "javascript",
+        "typescript",
+        "java",
+        "csharp",
+        "go",
+        "ruby",
+        "rust",
+        "php",
+        "sql",
+        "xml",
+        "markdown",
+        "bash",
+        "script",
+    )
 
 
     def _get_id(self) -> str:
@@ -124,6 +140,59 @@ class TextFormatter:
         """Pick a random formatter and return the wrapped payload plus span."""
         return self.code_format(random.choice(self.FORMATTERS), text)
 
+    @staticmethod
+    def _comment_variant(method: str, text: str) -> str:
+        line_comments = {
+            "python": ("#", ""),
+            "javascript": ("//", ""),
+            "typescript": ("//", ""),
+            "java": ("//", ""),
+            "csharp": ("//", ""),
+            "go": ("//", ""),
+            "ruby": ("#", ""),
+            "rust": ("//", ""),
+            "php": ("//", ""),
+            "sql": ("--", ""),
+            "bash": ("#", ""),
+            "script": ("#", ""),
+            "markdown": ("<!--", "-->"),
+            "xml": ("<!--", "-->"),
+        }
+        if method not in line_comments:
+            raise ValueError(f"Formatter {method!r} does not support comments")
+
+        prefix, suffix = line_comments[method]
+        if method in {"markdown", "xml"}:
+            return f"{prefix} {text} {suffix}"
+        return f"{prefix} {text}"
+
+    def comment_format(self, method: str, text: str) -> dict[str, object]:
+        """
+        Render a comment-style variant for a given formatter.
+
+        This still tracks the payload span exactly once, but the comment style
+        itself is treated as just another variant of the formatter.
+        """
+        if method not in self.COMMENT_FORMATTERS:
+            raise ValueError(f"Formatter {method!r} does not support comments")
+
+        probe = self._span_probe()
+        rendered = self._comment_variant(method, probe)
+        occurrences = rendered.count(probe)
+        if occurrences != 1:
+            raise ValueError(
+                f"Formatter {method!r} comment variant must place the payload exactly once; "
+                f"found {occurrences} occurrences of the probe token."
+            )
+
+        start = rendered.index(probe)
+        final = rendered.replace(probe, text, 1)
+        return {"text": final, "span": (start, start + len(text)), "method": f"{method}_comment"}
+
+    def random_comment_format(self, text: str) -> dict[str, object]:
+        """Pick a random comment-capable formatter and return the wrapped payload."""
+        return self.comment_format(random.choice(self.COMMENT_FORMATTERS), text)
+
     # ------------------------------------------------------------------ #
     #  PYTHON                                                              #
     # ------------------------------------------------------------------ #
@@ -140,6 +209,15 @@ class TextFormatter:
         logger = self._get_name()
 
         variants = [
+            self._comment_variant(
+                "python",
+                "\n".join(
+                    [
+                        f"def {fname}():",
+                        self._indent([f"return {self._quoted(text)}"]),
+                    ]
+                ),
+            ),
             # simple function + call
             "\n".join(
                 [
@@ -235,6 +313,17 @@ class TextFormatter:
         timeout = self._get_timeout()
 
         variants = [
+            self._comment_variant(
+                "javascript",
+                "\n".join(
+                    [
+                        "function noop() {",
+                        "  return null;",
+                        "}",
+                        f"console.log({q});",
+                    ]
+                ),
+            ),
             # arrow function
             f"const {fname} = ({var}) => {{\n  console.log({var});\n}};\n{fname}({q});",
             # async/await stub
@@ -297,6 +386,17 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "typescript",
+                "\n".join(
+                    [
+                        "function noop(): void {",
+                        "  return;",
+                        "}",
+                        f"console.log({q});",
+                    ]
+                ),
+            ),
             # typed function
             "\n".join(
                 [
@@ -349,6 +449,17 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "java",
+                "\n".join(
+                    [
+                        "class Noop {",
+                        "    static void noop() {}",
+                        "}",
+                        f"System.out.println({q});",
+                    ]
+                ),
+            ),
             # main class
             "\n".join(
                 [
@@ -421,6 +532,17 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "csharp",
+                "\n".join(
+                    [
+                        "class Noop {",
+                        "    static void Main() { }",
+                        "}",
+                        f"Console.WriteLine({q});",
+                    ]
+                ),
+            ),
             # namespace + class + main
             "\n".join(
                 [
@@ -483,6 +605,17 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "go",
+                "\n".join(
+                    [
+                        "package main",
+                        "",
+                        "func noop() {}",
+                        f"var _ = {q}",
+                    ]
+                ),
+            ),
             # main package
             "\n".join(
                 [
@@ -535,6 +668,17 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "ruby",
+                "\n".join(
+                    [
+                        "def noop",
+                        "  nil",
+                        "end",
+                        f"puts {q}",
+                    ]
+                ),
+            ),
             # simple puts
             f"{var} = {q}\nputs {var}",
             # method def
@@ -587,6 +731,15 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "rust",
+                "\n".join(
+                    [
+                        "fn noop() {}",
+                        f"let _ = {q};",
+                    ]
+                ),
+            ),
             # main
             "\n".join(
                 [
@@ -649,6 +802,17 @@ class TextFormatter:
         q = self._quoted(text)
 
         variants = [
+            self._comment_variant(
+                "php",
+                "\n".join(
+                    [
+                        "<?php",
+                        "function noop() {}",
+                        f"echo {q};",
+                        "?>",
+                    ]
+                ),
+            ),
             # simple echo
             f"<?php\n${var} = {q};\necho ${var};\n?>",
             # function
@@ -701,6 +865,15 @@ class TextFormatter:
         q_text = text.replace("'", "''")  # basic SQL escaping
 
         variants = [
+            self._comment_variant(
+                "sql",
+                "\n".join(
+                    [
+                        "-- noop",
+                        f"SELECT '{q_text}' AS payload;",
+                    ]
+                ),
+            ),
             f"SELECT '{q_text}' AS {alias};",
             f"SELECT {col1}, {col2} FROM {table} WHERE {col1} = '{q_text}' LIMIT 1;",
             "\n".join(
@@ -738,6 +911,15 @@ class TextFormatter:
         rid = self._get_int()
 
         variants = [
+            self._comment_variant(
+                "xml",
+                "\n".join(
+                    [
+                        "<!-- noop -->",
+                        f"<{root}>{self._payload_token}</{root}>",
+                    ]
+                ),
+            ),
             f"<{root} id='{rid}'>\n  <{child}>{self._payload_token}</{child}>\n</{root}>",
             f"<{root}><{child} {attr}='{rid}'>{self._payload_token}</{child}></{root}>",
             "\n".join(
@@ -790,6 +972,7 @@ class TextFormatter:
         if len(units) > 1:
             formatted = [random.choice(line_styles)(line) for line in units]
             return "\n".join(formatted)
+        block_variants.insert(0, f"<!-- {text} -->")
         return random.choice(block_variants)
 
     # ------------------------------------------------------------------ #
@@ -803,6 +986,15 @@ class TextFormatter:
         lines = text.splitlines() or [text]
 
         variants = [
+            self._comment_variant(
+                "bash",
+                "\n".join(
+                    [
+                        "# noop",
+                        f"printf '%s\\n' {q}",
+                    ]
+                ),
+            ),
             # variable + echo
             "\n".join(
                 [

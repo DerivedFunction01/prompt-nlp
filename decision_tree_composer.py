@@ -751,7 +751,13 @@ class DecisionTreeComposer:
             working.append(self._segment_from_row(row))
         return working
 
-    def _compose_text(self, text: str, recipe_type: str) -> tuple[str, bool, str | None]:
+    def _compose_text(
+        self,
+        text: str,
+        recipe_type: str,
+        *,
+        label: str | None = None,
+    ) -> tuple[str, bool, str | None]:
         if self.text_changer is None:
             return text, False, None
 
@@ -765,7 +771,12 @@ class DecisionTreeComposer:
             return text, False, None
 
         op_name, applied = operation
-        rendered = self.text_changer.compose(text, operation=op_name, seed=self.config.seed) # type: ignore
+        rendered = self.text_changer.compose(
+            text,
+            operation=op_name,
+            label=label,
+            seed=self.config.seed,
+        ) # type: ignore
         _text = rendered["text"]
         label = rendered["label"]
         assert label is None or isinstance(label, str)
@@ -1202,13 +1213,17 @@ class DecisionTreeComposer:
         segment = self._segment_from_row(base_row)
         rendered_segments = self._render_segments([segment], row_seed=row_id)
         assembled_text, spans = self._join_segments(rendered_segments)
+        final_category = segment["label"]
         if recipe_type == "obfuscated":
             transformed_text, mutation_applied, transform_label, obfuscation_kind, encryption_method = self._compose_obfuscated_text(assembled_text)
         else:
-            transformed_text, mutation_applied, transform_label = self._compose_text(assembled_text, recipe_type)
+            transformed_text, mutation_applied, transform_label = self._compose_text(
+                assembled_text,
+                recipe_type,
+                label=final_category,
+            )
             obfuscation_kind = ""
             encryption_method = ""
-        final_category = segment["label"]
         if recipe_type == "obfuscated":
             mutation_type = obfuscation_kind
             obfuscation_applied = True

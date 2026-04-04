@@ -10,6 +10,7 @@ from labels import PromptEntity
 
 class TextChanger:
     OBFUSCATION_LABEL = PromptEntity.OBFUSCATION.value
+    JAILBREAK_LABEL = PromptEntity.VIOLATION.value
     DEFAULT_MAX_FORMAT_CHARS = 160
 
     def __init__(self) -> None:
@@ -109,7 +110,10 @@ class TextChanger:
             elif operation == "encryption" and encryption_method is None:
                 encryption_method = random.choice(self.encrypter.METHODS)
             elif operation == "formatting" and code_method is None and can_format:
-                code_method = random.choice(self.formatter.FORMATTERS)
+                if label == self.JAILBREAK_LABEL:
+                    code_method = "admin_system_developer"
+                else:
+                    code_method = random.choice(self.formatter.FORMATTERS)
 
             if mutation_profile is not None and encryption_method is None:
                 payload = self.mutate(payload, profile=mutation_profile, seed=seed)
@@ -161,7 +165,10 @@ class TextChanger:
             final_label = self.OBFUSCATION_LABEL
 
         if "formatting" in selected_ops and can_format:
-            rendered = self.formatter.random_code_format(payload)
+            if final_label == self.JAILBREAK_LABEL:
+                rendered = self.formatter.code_format("admin_system_developer", payload)
+            else:
+                rendered = self.formatter.random_code_format(payload)
             rendered["label"] = final_label
             return rendered
 

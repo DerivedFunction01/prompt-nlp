@@ -189,6 +189,8 @@ class DecisionTreeConfig:
     seed: int = 42
     target_rows: int | None = None
     standalone_fraction: float = 0.20
+    standalone_control_fraction: float = 0.35
+    standalone_salad_fraction: float = 0.25
     obfuscation_fraction: float = 0.10
     mutation_fraction: float = 0.10
     composite_fraction: float | None = None
@@ -549,16 +551,45 @@ class DecisionTreeComposer:
         )
 
     def _standalone_recipe(self) -> str:
-        weights = [
-            ("standalone_benign", len(self.pools["benign"])),
+        control = max(0.0, self.config.standalone_control_fraction)
+        salad = max(0.0, self.config.standalone_salad_fraction)
+        reserved_total = control + salad
+        if reserved_total >= 1.0 and reserved_total > 0:
+            control_share = control / reserved_total
+            salad_share = salad / reserved_total
+            remaining = 0.0
+        else:
+            control_share = control
+            salad_share = salad
+            remaining = 1.0 - reserved_total
+
+        pool_weights = [
             ("standalone_persona", len(self.pools["persona"])),
             ("standalone_format", len(self.pools["format"])),
             ("standalone_nshot", len(self.pools["nshot"])),
             ("standalone_violation", len(self.pools["violation"])),
-            ("standalone_salad", len(self.pools["salad"])),
         ]
-        choices = [name for name, size in weights if size > 0]
-        return self._choice(choices)
+        available = [(name, size) for name, size in pool_weights if size > 0]
+
+        roll = self.rng.random()
+        if roll < control_share and len(self.pools["benign"]):
+            return "standalone_benign"
+        roll -= control_share
+        if roll < salad_share and len(self.pools["salad"]):
+            return "standalone_salad"
+        if available and remaining > 0:
+            total = sum(size for _, size in available)
+            pick = self.rng.uniform(0, total)
+            cursor = 0.0
+            for name, size in available:
+                cursor += size
+                if pick <= cursor:
+                    return name
+
+        fallback = [name for name, size in [("standalone_benign", len(self.pools["benign"])), ("standalone_salad", len(self.pools["salad"]))] if size > 0]
+        if fallback:
+            return self._choice(fallback)
+        return self._choice([name for name, size in pool_weights if size > 0])
 
     def _composite_recipe(self) -> str:
         choices = [
@@ -853,6 +884,24 @@ def main() -> None:
         help="Random seed for row selection.",
     )
     parser.add_argument(
+        "--standalone-fraction",
+        type=float,
+        default=0.20,
+        help="Fraction of total rows that should be standalone recipes.",
+    )
+    parser.add_argument(
+        "--standalone-control-fraction",
+        type=float,
+        default=0.35,
+        help="Within standalone rows, fraction reserved for benign/control examples.",
+    )
+    parser.add_argument(
+        "--standalone-salad-fraction",
+        type=float,
+        default=0.25,
+        help="Within standalone rows, fraction reserved for Salad examples.",
+    )
+    parser.add_argument(
         "--flat-only",
         action="store_true",
         help="Save only the flat five-column schema without span/debug columns.",
@@ -868,6 +917,9 @@ def main() -> None:
         config=DecisionTreeConfig(
             seed=args.seed,
             target_rows=args.rows,
+            standalone_fraction=args.standalone_fraction,
+            standalone_control_fraction=args.standalone_control_fraction,
+            standalone_salad_fraction=args.standalone_salad_fraction,
             return_debug_columns=not args.flat_only,
         )
     )

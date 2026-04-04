@@ -9,6 +9,23 @@ import randomname
 
 class TextFormatter:
     _payload_token = "__PAYLOAD__"
+    FORMATTERS = (
+        "python",
+        "javascript",
+        "typescript",
+        "java",
+        "csharp",
+        "go",
+        "ruby",
+        "rust",
+        "php",
+        "sql",
+        "xml",
+        "markdown",
+        "bash",
+        "script",
+        "json",
+    )
 
 
     def _get_id(self) -> str:
@@ -102,6 +119,10 @@ class TextFormatter:
         rendered = templated.replace(probe, text, 1)
         span = (start, start + len(text))
         return {"text": rendered, "span": span, "method": method}
+
+    def random_code_format(self, text: str) -> dict[str, object]:
+        """Pick a random formatter and return the wrapped payload plus span."""
+        return self.code_format(random.choice(self.FORMATTERS), text)
 
     # ------------------------------------------------------------------ #
     #  PYTHON                                                              #

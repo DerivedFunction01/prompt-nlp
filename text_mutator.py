@@ -915,7 +915,7 @@ class MutationOrchestrator:
         if not text:
             return text
 
-        if not profile:
+        if profile is None:
             profile = self._random_profile()
 
         # ------------------------------------------------------------------ #

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+
 from text_formatter import TextFormatter
 from text_encrypter import TextEncrypter
 from text_mutator import MutationOrchestrator
@@ -48,15 +50,45 @@ class TextChanger:
         """
         payload = text
 
-        payload = self.mutate(payload, profile=mutation_profile, seed=seed)
+        if seed is not None:
+            random.seed(seed)
 
-        payload = self.encrypt(
-            payload,
-            method=encryption_method,
-            max_chars=max_chars,
+        explicit_plan = any(
+            value is not None
+            for value in (mutation_profile, encryption_method, code_method)
         )
 
-        if code_method:
-            return self.formatter.code_format(code_method, payload)
+        if explicit_plan:
+            if mutation_profile is not None:
+                payload = self.mutate(payload, profile=mutation_profile, seed=seed)
+
+            if encryption_method is not None:
+                payload = self.encrypt(
+                    payload,
+                    method=encryption_method,
+                    max_chars=max_chars,
+                )
+
+            if code_method is not None:
+                return self.formatter.code_format(code_method, payload)
+
+            return {"text": payload, "span": (0, len(payload)), "method": None}
+
+        selected_ops = [
+            op
+            for op in ("mutation", "encryption", "formatting")
+            if random.random() < 0.5
+        ]
+        if not selected_ops:
+            selected_ops = [random.choice(("mutation", "encryption", "formatting"))]
+
+        if "mutation" in selected_ops:
+            payload = self.mutate(payload, profile=None, seed=seed)
+
+        if "encryption" in selected_ops:
+            payload = self.encrypt(payload, method=None, max_chars=max_chars)
+
+        if "formatting" in selected_ops:
+            return self.formatter.random_code_format(payload)
 
         return {"text": payload, "span": (0, len(payload)), "method": None}

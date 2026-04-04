@@ -9,38 +9,17 @@ SENTENCES = [
     "Please review the attached report before Friday.",
 ]
 
-LANGUAGES = [
-    "python",
-    "javascript",
-    "typescript",
-    "java",
-    "csharp",
-    "go",
-    "ruby",
-    "rust",
-    "php",
-    "sql",
-    "xml",
-    "bash",
-    "json",
-]
-
-
 def main():
     changer = TextChanger()
 
     for sentence in SENTENCES:
-        lang = __import__("random").choice(LANGUAGES)
-        print(f"=== [{lang.upper()}] ===")
+        print("=== [RANDOM PLAN] ===")
         print(f"Original : {sentence}")
-        rendered = changer.compose(
-            sentence,
-            code_method=lang,
-            seed=42,
-        )
-        print("Wrapped  :")
+        rendered = changer.compose(sentence, seed=42)
+        print("Rendered :")
         print(rendered["text"])
         print(f"Span     : {rendered['span']}")
+        print(f"Method   : {rendered['method']}")
         start, end = rendered["span"] # type: ignore
         print(f"Payload  : {rendered['text'][start:end]}") # type: ignore
         print()

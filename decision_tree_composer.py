@@ -635,9 +635,9 @@ def main() -> None:
         help="Random seed for row selection.",
     )
     parser.add_argument(
-        "--debug-columns",
+        "--flat-only",
         action="store_true",
-        help="Keep debug/planning columns in the saved parquet.",
+        help="Save only the flat five-column schema without span/debug columns.",
     )
     parser.add_argument(
         "--summary-only",
@@ -650,7 +650,7 @@ def main() -> None:
         config=DecisionTreeConfig(
             seed=args.seed,
             target_rows=args.rows,
-            return_debug_columns=args.debug_columns,
+            return_debug_columns=not args.flat_only,
         )
     )
 

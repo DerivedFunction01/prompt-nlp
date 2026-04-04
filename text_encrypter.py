@@ -76,7 +76,11 @@ class TextEncrypter:
         ).strip()
 
     @staticmethod
-    def to_caesar(text: str, shift: int = 3) -> str:
+    def to_caesar(text: str, shift: int | None = None) -> str:
+        # If no shift is provided, pick a random one that isn't 0 (mod 26)
+        if shift is None:
+            shift = random.randint(1, 25)
+
         result = ""
         for char in text:
             if char.isalpha():

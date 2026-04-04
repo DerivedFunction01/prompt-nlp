@@ -292,6 +292,12 @@ def infer_persona_type_from_row(row: dict[str, Any]) -> PersonaType:
     if category == PromptEntity.PERSONA.value:
         return PersonaType.RANDOM
 
+    if dataset_source == "jackhhao_jailbreak":
+        # Jailbreak rows can be augmented with model/org metadata in the
+        # notebook, but for persona selection we want the clean, neutral
+        # jailbreak signal rather than a conflicting source label.
+        return PersonaType.RANDOM
+
     if dataset_source == "salad_data":
         candidates = salad_metadata_to_persona_types(metadata)
         if candidates:

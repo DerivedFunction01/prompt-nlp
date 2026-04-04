@@ -218,6 +218,18 @@ These rows should be the most realistic:
 - jailbreak + intent
 - benign + format
 
+### Short-prompt fill
+
+If the assembled prompt is still too short after the base recipe is chosen, the planner may append extra spans from the same short family.
+
+Allowed fillers:
+
+- Salad spans, when Salad was already selected
+- jailbreak spans, when jailbreak was already selected
+- other short structural spans only if they were already part of the recipe
+
+This keeps short source families useful without forcing every row to stay minimal.
+
 ## N-shot Handling
 
 `NSHOT` should be handled as an internal multi-fragment recipe only.

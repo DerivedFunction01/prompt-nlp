@@ -56,6 +56,10 @@ _COMPOSITE_RECIPE_ANCHORS: tuple[str, ...] = (
     "benign",
     "salad",
 )
+_COMPOSITE_RECIPE_NON_REPEATABLE_KINDS: set[str] = {
+    "nshot",
+    "format",
+}
 _COMPOSITE_RECIPE_MIN_PARTS = 2
 _COMPOSITE_RECIPE_MAX_PARTS = 3
 
@@ -74,7 +78,7 @@ def _build_composite_recipe_specs() -> dict[str, dict[str, Any]]:
         for parts in combinations_with_replacement(_COMPOSITE_RECIPE_ORDER, size):
             if not any(kind in anchor_set for kind in parts):
                 continue
-            if parts.count("nshot") > 1:
+            if any(parts.count(kind) > 1 for kind in _COMPOSITE_RECIPE_NON_REPEATABLE_KINDS):
                 continue
             recipe_name = "_plus_".join(parts)
             specs[recipe_name] = {

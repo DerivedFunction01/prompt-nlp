@@ -36,7 +36,6 @@ BASE_PACKAGES = [
     "numpy",
     "scikit-learn",
     "nltk",
-    "pysbd",
 ]
 
 # Packages for data serialization and I/O

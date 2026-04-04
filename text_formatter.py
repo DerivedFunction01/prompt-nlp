@@ -27,6 +27,9 @@ class TextFormatter:
         "json",
         "admin_system_developer",
     )
+    RANDOM_FORMATTERS = tuple(
+        formatter for formatter in FORMATTERS if formatter != "admin_system_developer"
+    )
     COMMENT_FORMATTERS = (
         "python",
         "javascript",
@@ -146,7 +149,7 @@ class TextFormatter:
 
     def random_code_format(self, text: str) -> dict[str, object]:
         """Pick a random formatter and return the wrapped payload plus span."""
-        return self.code_format(random.choice(self.FORMATTERS), text)
+        return self.code_format(random.choice(self.RANDOM_FORMATTERS), text)
 
     @staticmethod
     def _comment_variant(method: str, text: str) -> str:

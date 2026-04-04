@@ -1052,6 +1052,16 @@ class TextFormatter:
         "TRUE",
         "FALSE",
     )
+    ROLE_EMOJIS: tuple[str, ...] = (
+        "🚨",
+        "⚠️",
+        "🔒",
+        "🔓",
+        "🛑",
+        "✅",
+        "❗",
+        "🔔",
+    )
 
     @classmethod
     def _pick_role_style(cls) -> tuple[str, str]:
@@ -1081,6 +1091,10 @@ class TextFormatter:
     def _pick_banner_state(cls) -> str:
         return random.choice(cls.BANNER_STATES)
 
+    @classmethod
+    def _pick_role_emoji(cls) -> str:
+        return random.choice(cls.ROLE_EMOJIS)
+
     @staticmethod
     def _apply_case(value: str, case_style: str) -> str:
         if case_style == "title":
@@ -1102,6 +1116,20 @@ class TextFormatter:
             seen.add(key)
             unique_parts.append(part)
         return " ".join(unique_parts)
+
+    @classmethod
+    def _maybe_emoji_prefix(cls, text: str, *, enabled: bool, count: int = 1) -> str:
+        if not enabled:
+            return text
+        emojis = " ".join(cls._pick_role_emoji() for _ in range(max(1, count)))
+        return f"{emojis} {text}"
+
+    @classmethod
+    def _maybe_emoji_suffix(cls, text: str, *, enabled: bool, count: int = 1) -> str:
+        if not enabled:
+            return text
+        emojis = " ".join(cls._pick_role_emoji() for _ in range(max(1, count)))
+        return f"{text} {emojis}"
 
     @staticmethod
     def _role_token(name: str, style: tuple[str, str]) -> str:
@@ -1184,39 +1212,50 @@ class TextFormatter:
         instruction_text = self._apply_case("instruction", case_style)
         mode_text = self._apply_case("mode", case_style)
         header_text = self._apply_case("header", case_style)
+        emoji_style = random.choice([True, False])
         style = self._pick_role_style()
         variants = [
             self._role_block(role_text, text, style=style),
             self._banner_block(
-                self._join_unique_parts(title_text, role_text, suffix_text),
+                self._maybe_emoji_prefix(
+                    self._join_unique_parts(title_text, role_text, suffix_text),
+                    enabled=emoji_style,
+                    count=2,
+                ),
                 text,
                 variant=random.choice(["dashed", "bracketed", "hash"]),
                 case_style=case_style,
             ),
-            self._path_header(f"{role_text} /dev/{role_text}/run", text),
+            self._path_header(
+                self._maybe_emoji_prefix(f"{role_text} /dev/{role_text}/run", enabled=emoji_style),
+                self._maybe_emoji_suffix(text, enabled=emoji_style),
+            ),
             "\n".join(
                 [
-                    f"<{role_text}_{instruction_text}>",
-                    f"  {text}",
-                    f"</{role_text}_{instruction_text}>",
+                    self._maybe_emoji_prefix(f"<{role_text}_{instruction_text}>", enabled=emoji_style),
+                    f"  {self._maybe_emoji_suffix(text, enabled=emoji_style, count=2)}",
+                    self._maybe_emoji_prefix(f"</{role_text}_{instruction_text}>", enabled=emoji_style),
                 ]
             ),
             "\n".join(
                 [
-                    f"[{role_text}_{mode_text}]",
-                    f"  {text}",
-                    f"[/{role_text}_{mode_text}]",
+                    self._maybe_emoji_prefix(f"[{role_text}_{mode_text}]", enabled=emoji_style),
+                    f"  {self._maybe_emoji_suffix(text, enabled=emoji_style)}",
+                    self._maybe_emoji_prefix(f"[/{role_text}_{mode_text}]", enabled=emoji_style),
                 ]
             ),
             "\n".join(
                 [
                     self._banner_block(
-                        self._join_unique_parts(title_text, role_text, header_text).replace(" ", "_"),
-                        text,
+                        self._maybe_emoji_suffix(
+                            self._join_unique_parts(title_text, role_text, header_text).replace(" ", "_"),
+                            enabled=emoji_style,
+                        ),
+                        self._maybe_emoji_prefix(text, enabled=emoji_style),
                         variant="dashed",
                         case_style=case_style,
                     ),
-                    self._role_block(role_text, text, style=("(", ")")),
+                    self._role_block(role_text, self._maybe_emoji_suffix(text, enabled=emoji_style), style=("(", ")")),
                 ]
             ),
         ]

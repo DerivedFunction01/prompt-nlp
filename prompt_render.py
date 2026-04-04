@@ -458,6 +458,13 @@ class PromptEditor:
             return "a"
         return "an" if re.match(r"^[aeiou]", cleaned, flags=re.IGNORECASE) else "a"
 
+    @classmethod
+    def _split_persona_phrase(cls, text: str) -> tuple[str, str]:
+        article, persona_text = cls._split_leading_article(text)
+        persona_text = persona_text or text.strip()
+        article = article or cls._guess_indefinite_article(persona_text)
+        return article, persona_text
+
     def _format_persona_clause(
         self,
         text: str,
@@ -468,17 +475,13 @@ class PromptEditor:
     ) -> str:
         if compact:
             cue = self.rng.choice(self.PERSONA_COMPACT_CUE_POOL)
-            article, persona_text = self._split_leading_article(text)
-            if not persona_text:
-                persona_text = text.strip()
+            article_out, persona_text = self._split_persona_phrase(text)
             if self.model_name:
                 identity, _ = self._format_model_identity()
                 if drop_model_version:
                     identity = self._compact_model_name(identity)
-                article_out = article or self._guess_indefinite_article(persona_text)
                 copula = "is not" if negated else "is"
                 return f"{cue}, {identity} {copula} {article_out} {persona_text}"
-            article_out = article or self._guess_indefinite_article(persona_text)
             copula = "are not" if negated else "are"
             return f"{cue}, you {copula} {article_out} {persona_text}"
 
@@ -597,10 +600,7 @@ class PromptEditor:
                 identity, _ = self._format_model_identity()
                 if drop_model_version:
                     identity = self._compact_model_name(identity)
-                article, persona_text = self._split_leading_article(text)
-                if not persona_text:
-                    persona_text = text.strip()
-                article_out = article or self._guess_indefinite_article(persona_text)
+                article_out, persona_text = self._split_persona_phrase(text)
                 if self.rng.random() < 0.5:
                     return f"{identity} is not {article_out} {persona_text}"
                 return f"As {identity}, you are not {article_out} {persona_text}"
@@ -610,28 +610,19 @@ class PromptEditor:
             if drop_model_version:
                 identity = self._compact_model_name(identity)
             if style == "is_a":
-                article, persona_text = self._split_leading_article(text)
-                if not persona_text:
-                    persona_text = text.strip()
-                article_out = article or self._guess_indefinite_article(persona_text)
+                article_out, persona_text = self._split_persona_phrase(text)
                 if negated:
                     return f"{identity} is not {article_out} {persona_text}"
                 return f"{identity} is {article_out} {persona_text}"
             if style == "as_you_are":
-                article, persona_text = self._split_leading_article(text)
-                if not persona_text:
-                    persona_text = text.strip()
-                article_out = article or self._guess_indefinite_article(persona_text)
+                article_out, persona_text = self._split_persona_phrase(text)
                 copula = "are not" if negated else "are"
                 return f"As {identity}, you {copula} {article_out} {persona_text}"
             copula = "are not" if negated else "are"
             return f"{prefix} {identity}, {self._capitalize_leading_article(text.strip())}"
 
         if negated:
-            article, persona_text = self._split_leading_article(text)
-            if not persona_text:
-                persona_text = text.strip()
-            article_out = article or self._guess_indefinite_article(persona_text)
+            article_out, persona_text = self._split_persona_phrase(text)
             return f"{prefix} {article_out} {persona_text}"
 
         return f"{prefix} {self._capitalize_leading_article(text.strip())}"

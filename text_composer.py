@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from typing import Literal
 
 from text_formatter import TextFormatter
 from text_encrypter import TextEncrypter
@@ -50,6 +51,7 @@ class TextChanger:
         self,
         text: str,
         *,
+        operation: Literal["mutation", "encryption", "formatting"] | None = None,
         mutation_profile: list[dict] | None = None,
         encryption_method: str | None = None,
         code_method: str | None = None,
@@ -69,12 +71,33 @@ class TextChanger:
         if seed is not None:
             random.seed(seed)
 
+        # Treat an empty mutation profile as "no explicit profile" so callers
+        # can still opt into the randomized branch selection path.
+        if mutation_profile is not None and len(mutation_profile) == 0:
+            mutation_profile = None
+
         explicit_plan = any(
             value is not None
             for value in (mutation_profile, encryption_method, code_method)
         )
+        if operation is not None:
+            explicit_plan = True
+
+        if operation is not None and operation not in {
+            "mutation",
+            "encryption",
+            "formatting",
+        }:
+            raise ValueError(f"Unknown operation: {operation!r}")
 
         if explicit_plan:
+            if operation == "mutation" and mutation_profile is None:
+                mutation_profile = self.mutator.random_profile()
+            elif operation == "encryption" and encryption_method is None:
+                encryption_method = random.choice(self.encrypter.METHODS)
+            elif operation == "formatting" and code_method is None:
+                code_method = random.choice(self.formatter.FORMATTERS)
+
             if mutation_profile is not None and encryption_method is None:
                 payload = self.mutate(payload, profile=mutation_profile, seed=seed)
                 if final_label is None and self._profile_is_obfuscation(mutation_profile):
@@ -107,6 +130,9 @@ class TextChanger:
         ]
         if not selected_ops:
             selected_ops = [random.choice(("mutation", "encryption", "formatting"))]
+
+        if operation is not None:
+            selected_ops = [operation]
 
         if "encryption" in selected_ops and "mutation" in selected_ops:
             selected_ops = [op for op in selected_ops if op != "mutation"]

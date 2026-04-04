@@ -827,7 +827,6 @@ class MutationOrchestrator:
             "ocr",
             "keyboard",
             "spelling",
-            "unicode_variation",
             "invisible_unicode",
         ]
         registry_names = list(self._registry)

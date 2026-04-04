@@ -377,7 +377,7 @@ class DecisionTreeConfig:
     standalone_fraction: float = 0.20
     standalone_control_fraction: float = 0.35
     standalone_salad_fraction: float = 0.25
-    obfuscation_fraction: float = 0.10
+    obfuscation_fraction: float = 0.05
     mutation_fraction: float = 0.10
     composite_fraction: float | None = None
     nshot_min_examples: int = 1
